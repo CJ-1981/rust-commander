@@ -1,0 +1,16 @@
+# Rust build artifacts
+/target
+
+# Backup files
+**/*.rs.bk
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Editor
+.idea/
+.vscode/

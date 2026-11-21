@@ -1,0 +1,27 @@
+[package]
+name = "rust-commander"
+version = "0.1.0"
+edition = "2021"
+description = "Total Commander-style dual-pane file manager with a utility toolbox, written in pure Rust. Works on Windows and macOS."
+license = "MIT"
+repository = "https://github.com/CJ-1981/rust-commander"
+readme = "README.md"
+keywords = ["file-manager", "dual-pane", "commander", "gui", "egui"]
+categories = ["gui", "filesystem"]
+
+[dependencies]
+eframe = "0.30"
+egui_extras = "0.30"
+image = { version = "0.25", default-features = false, features = ["png"] }
+rfd = "0.15"
+sha2 = "0.10"
+md-5 = "0.10"
+open = "5"
+chrono = "0.4"
+sysinfo = "0.31"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+codegen-units = 1
