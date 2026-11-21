@@ -69,6 +69,11 @@ jobs:
           APP_NAME="Rust Commander"
           mkdir -p "dist/${APP_NAME}.app/Contents/MacOS" "dist/${APP_NAME}.app/Contents/Resources"
           cp resources/Info.plist "dist/${APP_NAME}.app/Contents/Info.plist"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${VERSION}" "dist/${APP_NAME}.app/Contents/Info.plist"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" "dist/${APP_NAME}.app/Contents/Info.plist"
+          fi
           cp AppIcon.icns "dist/${APP_NAME}.app/Contents/Resources/AppIcon.icns"
           cp "target/${{ matrix.target }}/release/rust-commander" "dist/${APP_NAME}.app/Contents/MacOS/rust-commander"
           chmod +x "dist/${APP_NAME}.app/Contents/MacOS/rust-commander"

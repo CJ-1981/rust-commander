@@ -96,6 +96,17 @@ GitHub Actions (`.github/workflows/ci.yml`) builds release binaries on every pus
 
 Artifacts are attached to every CI run; pushing a tag like `v0.1.0` additionally publishes a GitHub Release with all three artifacts attached.
 
+### Cut a new release
+
+Releases are fully automated - one command publishes new binaries:
+
+```sh
+git tag v0.1.2
+git push origin v0.1.2
+```
+
+The pipeline then builds all three targets, packages them (macOS `.app` bundles with an auto-generated icon, Windows zip), and creates the GitHub Release with the binaries attached. The version inside the macOS bundle metadata is synced automatically from the pushed tag.
+
 ## License
 
 MIT - see [LICENSE](LICENSE).
