@@ -161,10 +161,7 @@ fn compute(
     let mut read_total = 0u64;
     loop {
         if cancel.load(Ordering::Relaxed) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "cancelled",
-            ));
+            return Err(std::io::Error::other("cancelled"));
         }
         let n = file.read(&mut buf)?;
         if n == 0 {
