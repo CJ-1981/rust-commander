@@ -49,6 +49,9 @@ pub struct FilePanel {
     pub ascending: bool,
     /// Set when the last reload failed to read the directory.
     pub load_error: Option<String>,
+    /// Anchor row (index into `visible`) of an in-progress press-drag
+    /// multi-select; cleared on release, navigation and re-sorting.
+    pub drag_from: Option<usize>,
 }
 
 impl FilePanel {
@@ -64,6 +67,7 @@ impl FilePanel {
             sort: SortKey::Name,
             ascending: true,
             load_error: None,
+            drag_from: None,
         };
         p.set_path(start);
         p
@@ -80,6 +84,7 @@ impl FilePanel {
         self.path_edit = self.path.display().to_string();
         self.cursor = 0;
         self.selected.clear();
+        self.drag_from = None;
         self.reload();
     }
 
@@ -145,6 +150,7 @@ impl FilePanel {
             }
         });
         self.visible = idx;
+        self.drag_from = None;
         if self.cursor >= self.visible.len() {
             self.cursor = self.visible.len().saturating_sub(1);
         }

@@ -14,3 +14,6 @@ Thumbs.db
 # Editor
 .idea/
 .vscode/
+
+# ZCode local state
+.zcode/

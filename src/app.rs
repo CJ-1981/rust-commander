@@ -58,6 +58,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Insert / Space", "Toggle selection at cursor"),
     ("Ctrl+Click", "Add to / remove from selection"),
     ("Shift+Click", "Range selection"),
+    ("Press + Drag", "Range selection with the mouse"),
     ("Double-click", "Enter folder / open file with system app"),
     ("F3", "View file (read-only)"),
     ("F4", "Edit file"),
@@ -680,19 +681,19 @@ impl CommanderApp {
                 ui.separator();
                 if icon_button(
                     ui,
-                    IconKind::View,
+                    ICON_VIEW,
                     can_op,
                     "View file in built-in viewer (F3)",
                 ) {
                     self.open_viewer(false);
                 }
-                if icon_button(ui, IconKind::Edit, can_op, "Edit file (F4)") {
+                if icon_button(ui, ICON_EDIT, can_op, "Edit file (F4)") {
                     self.open_viewer(true);
                 }
                 ui.separator();
                 if icon_button(
                     ui,
-                    IconKind::Copy,
+                    ICON_COPY,
                     can_op,
                     "Copy selection to opposite panel (F5)",
                 ) {
@@ -700,7 +701,7 @@ impl CommanderApp {
                 }
                 if icon_button(
                     ui,
-                    IconKind::Move,
+                    ICON_MOVE,
                     can_op,
                     "Move selection to opposite panel (F6)",
                 ) {
@@ -709,18 +710,18 @@ impl CommanderApp {
                 ui.separator();
                 if icon_button(
                     ui,
-                    IconKind::NewFolder,
+                    ICON_NEW_FOLDER,
                     !modal_open,
                     "New folder (F7)",
                 ) {
                     self.modal = Some(Modal::Mkdir { name: String::new() });
                 }
-                if icon_button(ui, IconKind::Rename, can_op, "Rename (Shift+F6)") {
+                if icon_button(ui, ICON_RENAME, can_op, "Rename (Shift+F6)") {
                     self.open_rename_modal();
                 }
                 if icon_button(
                     ui,
-                    IconKind::Delete,
+                    ICON_DELETE,
                     can_op,
                     "Delete selection permanently (F8)",
                 ) {
@@ -729,7 +730,7 @@ impl CommanderApp {
                 ui.separator();
                 if icon_button(
                     ui,
-                    IconKind::OpenExternal,
+                    ICON_OPEN_EXT,
                     can_op,
                     "Open selected file with system app",
                 ) {
@@ -954,6 +955,7 @@ impl CommanderApp {
                                             r.union(catcher)
                                         })
                                         .inner;
+                                    drag_select(ui, p, vi, &path);
                                     if r.clicked() {
                                         clicked.set(true);
                                         let mods = ui.input(|i| i.modifiers);
@@ -1040,6 +1042,7 @@ impl CommanderApp {
                                             r.union(catcher)
                                         })
                                         .inner;
+                                    drag_select(ui, p, vi, &path);
                                     if r.clicked() {
                                         p.selected.clear();
                                         p.selected.insert(path.clone());
@@ -1060,6 +1063,7 @@ impl CommanderApp {
                                             r.union(catcher)
                                         })
                                         .inner;
+                                    drag_select(ui, p, vi, &path);
                                     if r.clicked() {
                                         p.selected.clear();
                                         p.selected.insert(path.clone());
@@ -1085,6 +1089,7 @@ impl CommanderApp {
                                             r.union(catcher)
                                         })
                                         .inner;
+                                    drag_select(ui, p, vi, &path);
                                     if r.clicked() {
                                         p.selected.clear();
                                         p.selected.insert(path.clone());
@@ -1094,6 +1099,11 @@ impl CommanderApp {
                             });
                         }
                     });
+
+                // Press-drag multi-select ends when the button is released.
+                if p.drag_from.is_some() && !ui.input(|i| i.pointer.primary_down()) {
+                    p.drag_from = None;
+                }
 
                 if let Some(sc) = sort_click.get() {
                     if sc.flip {
@@ -1525,225 +1535,52 @@ fn dir_color(ui: &egui::Ui) -> egui::Color32 {
     }
 }
 
-/// The vector glyphs drawn in the top toolbar (see `icon_button`).
-#[derive(Clone, Copy)]
-enum IconKind {
-    View,
-    Edit,
-    Copy,
-    Move,
-    NewFolder,
-    Rename,
-    Delete,
-    OpenExternal,
-}
+/// Toolbar glyphs (monochrome emoji, rendered by egui's bundled Noto
+/// emoji font - all verified present via examples/emoji_coverage.rs).
+const ICON_VIEW: &str = "🔍";
+const ICON_EDIT: &str = "✏";
+const ICON_COPY: &str = "📋";
+const ICON_MOVE: &str = "🔁";
+const ICON_NEW_FOLDER: &str = "📁";
+const ICON_RENAME: &str = "📝";
+const ICON_DELETE: &str = "🗑";
+const ICON_OPEN_EXT: &str = "↗";
 
-/// Square toolbar button with a hand-drawn vector icon. Returns true on click.
-/// Icons are painted with the egui painter (no font glyph or asset involved),
-/// so they always match the active theme.
-fn icon_button(ui: &mut egui::Ui, kind: IconKind, enabled: bool, tip: &str) -> bool {
-    let visuals = ui.visuals().clone();
-    let h = ui.spacing().interact_size.y;
-    let (rect, mut resp) = ui.allocate_exact_size(egui::vec2(h * 1.6, h), egui::Sense::click());
-
-    let fg = if enabled {
-        visuals.strong_text_color()
-    } else {
-        visuals.widgets.inactive.fg_stroke.color
-    };
-    let (bg, stroke) = if !enabled {
-        (egui::Color32::TRANSPARENT, egui::Stroke::NONE)
-    } else if resp.is_pointer_button_down_on() {
-        (
-            visuals.widgets.active.bg_fill,
-            visuals.widgets.active.bg_stroke,
-        )
-    } else if resp.hovered() {
-        (
-            visuals.widgets.hovered.bg_fill,
-            visuals.widgets.hovered.bg_stroke,
-        )
-    } else {
-        (
-            visuals.widgets.inactive.bg_fill,
-            visuals.widgets.inactive.bg_stroke,
-        )
-    };
-    let rounding = visuals.widgets.inactive.rounding;
-    ui.painter().rect_filled(rect, rounding, bg);
-    if stroke.width > 0.0 {
-        ui.painter().rect_stroke(rect, rounding, stroke);
-    }
-    draw_icon(ui.painter(), kind, rect.shrink(4.0), fg);
-
+/// Toolbar button with an emoji icon. Returns true on click. Greyed out and
+/// inert when `enabled` is false (tooltip still explains why).
+fn icon_button(ui: &mut egui::Ui, icon: &'static str, enabled: bool, tip: &str) -> bool {
+    let txt = egui::RichText::new(icon).size(15.0);
+    let txt = if enabled { txt } else { txt.weak() };
+    let mut resp = ui.add(egui::Button::new(txt));
     resp = resp.on_hover_text(tip);
-    resp.on_disabled_hover_text(format!("{} (nothing selected)", tip))
-        .clicked()
+    if !enabled {
+        resp.on_disabled_hover_text(format!("{} (nothing selected)", tip));
+        return false;
+    }
+    resp.clicked()
 }
 
-/// Paint one toolbar glyph inside `r` using simple shapes.
-fn draw_icon(p: &egui::Painter, kind: IconKind, r: egui::Rect, c: egui::Color32) {
-    let st = egui::Stroke::new(1.5_f32, c);
-    match kind {
-        // Magnifier (inspect / view).
-        IconKind::View => {
-            let cc = egui::pos2(r.left() + r.width() * 0.38, r.top() + r.height() * 0.38);
-            let rad = r.width() * 0.32;
-            p.circle_stroke(cc, rad, st);
-            p.line_segment(
-                [
-                    egui::pos2(cc.x + rad * 0.72, cc.y + rad * 0.72),
-                    egui::pos2(r.right() - 0.5, r.bottom() - 0.5),
-                ],
-                st,
-            );
-        }
-        // Pencil.
-        IconKind::Edit => {
-            let a = egui::pos2(r.left() + 1.0, r.bottom() - 3.0);
-            let b = egui::pos2(r.right() - 3.0, r.top() + 1.0);
-            p.line_segment([a, b], egui::Stroke::new(2.0_f32, c));
-            p.add(egui::Shape::convex_polygon(
-                vec![
-                    a,
-                    egui::pos2(a.x + 3.0, r.bottom() - 0.5),
-                    egui::pos2(r.left() + 0.5, r.bottom() - 0.5),
-                ],
-                c,
-                egui::Stroke::NONE,
-            ));
-        }
-        // Two stacked sheets.
-        IconKind::Copy => {
-            let w = r.width() * 0.55;
-            let back = egui::Rect::from_min_size(
-                egui::pos2(r.left(), r.top()),
-                egui::vec2(w, w * 1.05),
-            );
-            let front = egui::Rect::from_min_size(
-                egui::pos2(r.left() + w * 0.45, r.top() + w * 0.45),
-                egui::vec2(w, w * 1.05),
-            );
-            p.rect_stroke(back, 1.5, st);
-            p.rect_filled(front, 1.5, c);
-        }
-        // Box with arrow leaving to the right.
-        IconKind::Move => {
-            let bw = r.width() * 0.5;
-            let bh = r.height() * 0.56;
-            let b = egui::Rect::from_min_size(
-                egui::pos2(r.left(), r.center().y - bh / 2.0),
-                egui::vec2(bw, bh),
-            );
-            p.rect_stroke(b, 1.5, st);
-            let y = b.center().y;
-            p.line_segment([egui::pos2(b.center().x, y), egui::pos2(r.right(), y)], st);
-            p.add(egui::Shape::convex_polygon(
-                vec![
-                    egui::pos2(r.right(), y),
-                    egui::pos2(r.right() - 3.5, y - 2.5),
-                    egui::pos2(r.right() - 3.5, y + 2.5),
-                ],
-                c,
-                egui::Stroke::NONE,
-            ));
-        }
-        // Folder outline with a plus sign.
-        IconKind::NewFolder => {
-            let fw = r.width() * 0.62;
-            let fh = r.height() * 0.52;
-            let x0 = r.left();
-            let y0 = r.bottom() - fh;
-            let tab_w = fw * 0.38;
-            let tab_h = fh * 0.45;
-            let mut pts = vec![
-                egui::pos2(x0, r.bottom()),
-                egui::pos2(x0, y0 - tab_h),
-                egui::pos2(x0 + tab_w, y0 - tab_h),
-                egui::pos2(x0 + tab_w + tab_h * 0.7, y0),
-                egui::pos2(x0 + fw, y0),
-                egui::pos2(x0 + fw, r.bottom()),
-                egui::pos2(x0, r.bottom()),
-            ];
-            p.add(egui::Shape::line(pts, st));
-            let px = r.right() - 1.5;
-            let py = r.top() + 2.0;
-            let s = r.width() * 0.16;
-            p.line_segment([egui::pos2(px - s, py), egui::pos2(px + s, py)], st);
-            p.line_segment([egui::pos2(px, py - s), egui::pos2(px, py + s)], st);
-        }
-        // I-beam text cursor.
-        IconKind::Rename => {
-            let cx = r.center().x;
-            let top = r.top() + 1.0;
-            let bot = r.bottom() - 1.0;
-            p.line_segment([egui::pos2(cx, top), egui::pos2(cx, bot)], st);
-            let s = r.width() * 0.2;
-            for y in [top, bot] {
-                p.line_segment([egui::pos2(cx - s, y), egui::pos2(cx + s, y)], st);
+/// Press-drag multi-select for one table row: a plain (unmodified) press
+/// anchors a row and selects it; while the button stays held, every row the
+/// pointer passes over extends the selection to the anchored range. The drag
+/// ends on release (cleared by `draw_panel` after the table pass).
+fn drag_select(ui: &mut egui::Ui, p: &mut FilePanel, vi: usize, path: &std::path::Path) {
+    let primary_down = ui.input(|i| i.pointer.primary_down());
+    let unmodified = !ui.input(|i| i.modifiers.any());
+    let hovered = ui.rect_contains_pointer(ui.max_rect());
+    if primary_down && unmodified && p.drag_from.is_none() && hovered {
+        p.drag_from = Some(vi);
+        p.selected.clear();
+        p.selected.insert(path.to_path_buf());
+        p.cursor = vi;
+    } else if let Some(from) = p.drag_from {
+        if primary_down && hovered {
+            let (lo, hi) = (from.min(vi), from.max(vi));
+            p.selected.clear();
+            for k in lo..=hi {
+                p.selected.insert(p.entries[p.visible[k]].path.clone());
             }
-        }
-        // Trash can.
-        IconKind::Delete => {
-            let w = r.width() * 0.62;
-            let body = egui::Rect::from_min_size(
-                egui::pos2(r.center().x - w / 2.0, r.top() + r.height() * 0.32),
-                egui::vec2(w, r.height() * 0.6),
-            );
-            p.rect_stroke(body, 1.5, st);
-            p.rect_filled(
-                egui::Rect::from_min_size(
-                    egui::pos2(body.left() - 2.0, r.top() + r.height() * 0.22),
-                    egui::vec2(w + 4.0, 1.5),
-                ),
-                0.5,
-                c,
-            );
-            p.rect_stroke(
-                egui::Rect::from_min_size(
-                    egui::pos2(r.center().x - w * 0.18, r.top()),
-                    egui::vec2(w * 0.36, r.height() * 0.24),
-                ),
-                1.0,
-                st,
-            );
-            for dx in [-w * 0.16_f32, w * 0.16] {
-                let x = body.center().x + dx;
-                p.line_segment(
-                    [
-                        egui::pos2(x, body.top() + 2.0),
-                        egui::pos2(x, body.bottom() - 2.0),
-                    ],
-                    st,
-                );
-            }
-        }
-        // Box with an arrow escaping to the top-right.
-        IconKind::OpenExternal => {
-            let w = r.width() * 0.55;
-            let bx = egui::Rect::from_min_size(
-                egui::pos2(r.left(), r.bottom() - w),
-                egui::vec2(w, w),
-            );
-            let pts = vec![
-                egui::pos2(bx.right(), bx.bottom()),
-                egui::pos2(bx.left(), bx.bottom()),
-                egui::pos2(bx.left(), bx.top()),
-                egui::pos2(bx.center().x, bx.top()),
-            ];
-            p.add(egui::Shape::line(pts, st));
-            let from = egui::pos2(bx.center().x, bx.center().y);
-            let to = egui::pos2(r.right() - 1.0, r.top() + 1.0);
-            p.line_segment([from, to], st);
-            p.add(egui::Shape::convex_polygon(
-                vec![
-                    to,
-                    egui::pos2(to.x - 4.0, to.y + 0.5),
-                    egui::pos2(to.x - 0.5, to.y + 4.0),
-                ],
-                c,
-                egui::Stroke::NONE,
-            ));
+            p.cursor = vi;
         }
     }
 }
