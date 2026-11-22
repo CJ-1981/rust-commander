@@ -661,14 +661,15 @@ impl CommanderApp {
     }
 
     fn show_panels(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let avail = ui.available_size();
-            let w = (avail.x * 0.5 - 6.0).max(320.0);
-            ui.horizontal(|ui| {
-                ui.allocate_ui(egui::vec2(w, avail.y), |ui| self.draw_panel(ui, 0));
-                ui.allocate_ui(egui::vec2(w, avail.y), |ui| self.draw_panel(ui, 1));
-            });
-        });
+        // SidePanel/CentralPanel give each pane a top-down layout. Do NOT wrap
+        // the panes in ui.horizontal + allocate_ui: allocate_ui inherits the
+        // parent's horizontal layout, which flattens each pane's contents
+        // (path bar, toolbar, table) into one row with a collapsed Name column.
+        egui::SidePanel::left("pane_left")
+            .resizable(true)
+            .min_width(320.0)
+            .show(ctx, |ui| self.draw_panel(ui, 0));
+        egui::CentralPanel::default().show(ctx, |ui| self.draw_panel(ui, 1));
     }
 
     fn draw_panel(&mut self, ui: &mut egui::Ui, idx: usize) {
