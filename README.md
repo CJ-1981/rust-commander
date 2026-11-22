@@ -101,7 +101,7 @@ Artifacts are attached to every CI run; pushing a tag like `v0.1.0` additionally
 Releases are fully automated - one command publishes new binaries:
 
 ```sh
-git tag v0.1.3
+git tag v0.1.4
 git push origin v0.1.2
 ```
 
