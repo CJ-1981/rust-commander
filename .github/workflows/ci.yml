@@ -77,8 +77,15 @@ jobs:
           cp AppIcon.icns "dist/${APP_NAME}.app/Contents/Resources/AppIcon.icns"
           cp "target/${{ matrix.target }}/release/rust-commander" "dist/${APP_NAME}.app/Contents/MacOS/rust-commander"
           chmod +x "dist/${APP_NAME}.app/Contents/MacOS/rust-commander"
+          # Ad-hoc sign the bundle. Gatekeeper rejects quarantined apps whose
+          # signature is missing or inconsistent as "damaged" with no bypass;
+          # an ad-hoc signature downgrades that to "unidentified developer",
+          # which users can open via right-click > Open (or Privacy settings).
+          codesign --force --deep --sign - "dist/${APP_NAME}.app"
+          codesign --verify --deep "dist/${APP_NAME}.app"
           cd dist
-          zip -r -q "${{ matrix.artifact }}.zip" "${APP_NAME}.app"
+          # ditto (not zip) so the archive preserves signature metadata and permissions
+          ditto -c -k --sequesterRsrc --keepParent "${APP_NAME}.app" "${{ matrix.artifact }}.zip"
           cd ..
 
       - name: Package (Windows zip)

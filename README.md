@@ -78,9 +78,9 @@ cargo run --release
 ## Platform notes
 
 - **Windows**: drive letters A-Z are auto-detected in the Drives menu.
-- **macOS**: mounted volumes appear via `/Volumes`. The `.app` bundles produced by CI are unsigned, so the first launch may require right-click > Open, or clearing the quarantine flag:
+- **macOS**: mounted volumes appear via `/Volumes`. The `.app` bundles produced by CI are ad-hoc signed (no Apple Developer ID), so macOS shows an "unidentified developer" warning on first launch. Right-click > Open once, or approve under System Settings > Privacy & Security > "Open Anyway". If macOS reports the app as "damaged", clear the download quarantine flag:
   ```sh
-  xattr -d com.apple.quarantine "Rust Commander.app"
+  xattr -cr "Rust Commander.app"
   ```
 - **Delete is permanent** (no recycle bin) - the confirmation dialog exists for a reason.
 
