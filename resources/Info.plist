@@ -9,9 +9,9 @@
         <key>CFBundleIdentifier</key>
         <string>io.github.CJ-1981.rust-commander</string>
         <key>CFBundleVersion</key>
-        <string>0.1.4</string>
+        <string>0.1.5</string>
         <key>CFBundleShortVersionString</key>
-        <string>0.1.4</string>
+        <string>0.1.5</string>
         <key>CFBundleExecutable</key>
         <string>rust-commander</string>
         <key>CFBundlePackageType</key>
