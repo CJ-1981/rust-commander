@@ -20,7 +20,7 @@ fn main() -> Result<(), eframe::Error> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Rust Commander")
+            .with_title(format!("Rust Commander v{}", env!("CARGO_PKG_VERSION")))
             .with_inner_size([1280.0, 820.0])
             .with_min_inner_size([940.0, 560.0])
             .with_icon(icon),

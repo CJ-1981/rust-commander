@@ -747,6 +747,15 @@ impl CommanderApp {
                 ) {
                     self.open_external_current();
                 }
+
+                // Version, right-aligned (also in the OS window title).
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                            .weak()
+                            .small(),
+                    );
+                });
             });
         });
     }
@@ -797,9 +806,17 @@ impl CommanderApp {
 
             let top_down = egui::Layout::top_down(egui::Align::Min);
             ui.horizontal(|ui| {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(width, avail.y),
-                    top_down,
+                // Children carry explicit id salts: unsalted child UIs all
+                // derive the same id, which made the two panes' tables,
+                // scroll areas and widgets collide (egui's "First/Second
+                // use of Table ID" debug paint).
+                let pane0_rect =
+                    egui::Rect::from_min_size(ui.cursor().min, egui::vec2(width, avail.y));
+                ui.allocate_new_ui(
+                    egui::UiBuilder::new()
+                        .id_salt("pane_left")
+                        .max_rect(pane0_rect)
+                        .layout(top_down),
                     |ui| self.draw_panel(ui, 0),
                 );
 
@@ -838,9 +855,14 @@ impl CommanderApp {
                     }
                 }
 
-                ui.allocate_ui_with_layout(
-                    egui::vec2(avail.x - width - 10.0, avail.y),
-                    top_down,
+                let rest = (ui.max_rect().right() - ui.cursor().min.x).max(200.0);
+                let pane1_rect =
+                    egui::Rect::from_min_size(ui.cursor().min, egui::vec2(rest, avail.y));
+                ui.allocate_new_ui(
+                    egui::UiBuilder::new()
+                        .id_salt("pane_right")
+                        .max_rect(pane1_rect)
+                        .layout(top_down),
                     |ui| self.draw_panel(ui, 1),
                 );
             });
