@@ -47,6 +47,8 @@ pub struct FilePanel {
     pub show_hidden: bool,
     pub sort: SortKey,
     pub ascending: bool,
+    /// Set when the last reload failed to read the directory.
+    pub load_error: Option<String>,
 }
 
 impl FilePanel {
@@ -61,6 +63,7 @@ impl FilePanel {
             show_hidden: false,
             sort: SortKey::Name,
             ascending: true,
+            load_error: None,
         };
         p.set_path(start);
         p
@@ -83,27 +86,31 @@ impl FilePanel {
     /// Re-read the current directory, keeping the selection set.
     pub fn reload(&mut self) {
         self.entries.clear();
-        if let Ok(rd) = fs::read_dir(&self.path) {
-            for e in rd.flatten() {
-                let path = e.path();
-                let name = e.file_name().to_string_lossy().into_owned();
-                let meta = e.metadata().ok();
-                let (is_dir, size, modified) = match &meta {
-                    Some(m) => (
-                        m.is_dir(),
-                        if m.is_dir() { 0 } else { m.len() },
-                        m.modified().ok(),
-                    ),
-                    None => (false, 0, None),
-                };
-                self.entries.push(FileEntry {
-                    name,
-                    path,
-                    is_dir,
-                    size,
-                    modified,
-                });
+        self.load_error = None;
+        match fs::read_dir(&self.path) {
+            Ok(rd) => {
+                for e in rd.flatten() {
+                    let path = e.path();
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    let meta = e.metadata().ok();
+                    let (is_dir, size, modified) = match &meta {
+                        Some(m) => (
+                            m.is_dir(),
+                            if m.is_dir() { 0 } else { m.len() },
+                            m.modified().ok(),
+                        ),
+                        None => (false, 0, None),
+                    };
+                    self.entries.push(FileEntry {
+                        name,
+                        path,
+                        is_dir,
+                        size,
+                        modified,
+                    });
+                }
             }
+            Err(e) => self.load_error = Some(e.to_string()),
         }
         self.apply_filter_sort();
     }

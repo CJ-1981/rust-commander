@@ -19,6 +19,20 @@ enum Modal {
     Mkdir { name: String },
     Rename { path: PathBuf, name: String },
     Delete { count: usize, preview: Vec<String> },
+    /// Confirm discarding unsaved edits in the viewer.
+    DiscardViewer,
+}
+
+/// Actions requested from a table row's context menu, executed after the
+/// panel frame is drawn (they need `&mut self`, unavailable inside the UI
+/// closures that borrow the panel).
+enum RowAction {
+    /// Open a file in the built-in viewer.
+    View(PathBuf),
+    /// Copy the entry (or the selection containing it) to the opposite panel.
+    CopyTo(PathBuf),
+    Rename(PathBuf),
+    Delete(PathBuf),
 }
 
 /// Which sort header was clicked inside a table body render pass.
@@ -79,19 +93,32 @@ pub fn start_dir() -> PathBuf {
 }
 
 impl CommanderApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let prefs: Prefs = cc
+            .storage
+            .and_then(|s| eframe::get_value(s, "prefs"))
+            .unwrap_or_default();
+        cc.egui_ctx.set_visuals(if prefs.dark {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        });
         let start = start_dir();
-        Self {
+        let mut app = Self {
             panels: [FilePanel::new(start.clone()), FilePanel::new(start)],
             active: 0,
-            dark: true,
+            dark: prefs.dark,
             jobs: Vec::new(),
             modal: None,
             toolbox: Toolbox::default(),
             viewer: None,
             show_help: false,
             toasts: Vec::new(),
+        };
+        if prefs.show_hidden {
+            app.set_hidden(true);
         }
+        app
     }
 
     // ---------------------------------------------------------------- helpers
@@ -145,6 +172,24 @@ impl CommanderApp {
         }
     }
 
+    /// Point the operation target at `path`: if the panel's selection already
+    /// contains it the selection stands, otherwise the selection is reduced to
+    /// that single entry (used by row context-menu actions).
+    fn focus_op_selection(&mut self, panel_idx: usize, path: &PathBuf) {
+        let p = &mut self.panels[panel_idx];
+        if !p.selected.contains(path) {
+            p.selected.clear();
+            p.selected.insert(path.clone());
+            if let Some(vi) = p
+                .visible
+                .iter()
+                .position(|&vi| &p.entries[vi].path == path)
+            {
+                p.cursor = vi;
+            }
+        }
+    }
+
     fn move_cursor(&mut self, delta: i32) {
         let p = &mut self.panels[self.active];
         if p.visible.is_empty() {
@@ -183,11 +228,20 @@ impl CommanderApp {
         }
     }
 
+    /// Refuse to swap the viewer while it has unsaved edits.
+    fn viewer_busy_with_edits(&self) -> bool {
+        matches!(&self.viewer, Some(v) if v.dirty)
+    }
+
     fn enter_current(&mut self) {
         if let Some(e) = self.current_entry(self.active) {
             if e.is_dir {
                 self.panels[self.active].set_path(e.path);
             } else {
+                if self.viewer_busy_with_edits() {
+                    self.toast("Save or discard the open editor first", true);
+                    return;
+                }
                 self.viewer = Some(Viewer::open(&e.path, false));
             }
         }
@@ -198,6 +252,10 @@ impl CommanderApp {
             if e.is_dir {
                 self.toast("Cannot view a folder - navigate into it", true);
             } else {
+                if self.viewer_busy_with_edits() {
+                    self.toast("Save or discard the open editor first", true);
+                    return;
+                }
                 self.viewer = Some(Viewer::open(&e.path, editing));
             }
         }
@@ -267,6 +325,7 @@ impl CommanderApp {
             Some(Modal::Mkdir { name }) => self.do_mkdir(name),
             Some(Modal::Rename { path, name }) => self.do_rename(path, name),
             Some(Modal::Delete { .. }) => self.start_delete(),
+            Some(Modal::DiscardViewer) => self.viewer = None,
             None => {}
         }
     }
@@ -609,23 +668,72 @@ impl CommanderApp {
                     }
                 });
 
+                // No global Up/Home/Drives/Refresh here: those live in each
+                // panel's own toolbar (the top bar acted only on the active
+                // panel, duplicating it).
+
+                // Icon toolbar: mouse access to the function-key operations.
+                // All act on the active (highlighted) panel.
+                let modal_open = self.modal.is_some();
+                let has_items = !self.op_items().is_empty();
+                let can_op = !modal_open && has_items;
                 ui.separator();
-                if ui.button("Up").clicked() {
-                    self.nav_parent();
+                if icon_button(
+                    ui,
+                    IconKind::View,
+                    can_op,
+                    "View file in built-in viewer (F3)",
+                ) {
+                    self.open_viewer(false);
                 }
-                if ui.button("Home").clicked() {
-                    let d = start_dir();
-                    self.panels[self.active].set_path(d);
+                if icon_button(ui, IconKind::Edit, can_op, "Edit file (F4)") {
+                    self.open_viewer(true);
                 }
-                ui.menu_button("Drives", |ui| {
-                    for root in list_roots() {
-                        if ui.button(root.display().to_string()).clicked() {
-                            self.panels[self.active].set_path(root);
-                        }
-                    }
-                });
-                if ui.button("Refresh").clicked() {
-                    self.reload_both();
+                ui.separator();
+                if icon_button(
+                    ui,
+                    IconKind::Copy,
+                    can_op,
+                    "Copy selection to opposite panel (F5)",
+                ) {
+                    self.open_copy_modal();
+                }
+                if icon_button(
+                    ui,
+                    IconKind::Move,
+                    can_op,
+                    "Move selection to opposite panel (F6)",
+                ) {
+                    self.open_move_modal();
+                }
+                ui.separator();
+                if icon_button(
+                    ui,
+                    IconKind::NewFolder,
+                    !modal_open,
+                    "New folder (F7)",
+                ) {
+                    self.modal = Some(Modal::Mkdir { name: String::new() });
+                }
+                if icon_button(ui, IconKind::Rename, can_op, "Rename (Shift+F6)") {
+                    self.open_rename_modal();
+                }
+                if icon_button(
+                    ui,
+                    IconKind::Delete,
+                    can_op,
+                    "Delete selection permanently (F8)",
+                ) {
+                    self.open_delete_modal();
+                }
+                ui.separator();
+                if icon_button(
+                    ui,
+                    IconKind::OpenExternal,
+                    can_op,
+                    "Open selected file with system app",
+                ) {
+                    self.open_external_current();
                 }
             });
         });
@@ -651,7 +759,7 @@ impl CommanderApp {
                 }
                 ui.label(
                     egui::RichText::new(
-                        "Tab switch panel | Enter open | Backspace up | Insert select | F3 view | F4 edit | F5 copy | F6 move | F7 mkdir | F8 delete",
+                        "Tab panel · F5 copy · F6 move · F8 delete · F3 view · shortcuts: Help menu",
                     )
                     .weak()
                     .small(),
@@ -668,6 +776,7 @@ impl CommanderApp {
         egui::SidePanel::left("pane_left")
             .resizable(true)
             .min_width(320.0)
+            .default_width((ctx.screen_rect().width() * 0.45).max(360.0))
             .show(ctx, |ui| self.draw_panel(ui, 0));
         egui::CentralPanel::default().show(ctx, |ui| self.draw_panel(ui, 1));
     }
@@ -680,9 +789,22 @@ impl CommanderApp {
         } else {
             ui.visuals().widgets.inactive.bg_stroke
         };
+        // Subtle accent tint marks the active pane beyond the border stroke.
+        let fill = if active {
+            accent.gamma_multiply(0.06)
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        // Deferred results collected while drawing (panel state is borrowed
+        // inside the closures below; these are applied once it is released).
+        let go_failed = Cell::new(false);
+        let clicked = Cell::new(false);
+        let row_action = RefCell::new(None::<RowAction>);
+        let open_ext = RefCell::new(None::<PathBuf>);
 
         egui::Frame::default()
             .stroke(stroke)
+            .fill(fill)
             .rounding(6.0)
             .inner_margin(egui::Margin::same(8.0))
             .show(ui, |ui| {
@@ -703,6 +825,7 @@ impl CommanderApp {
                             p.set_path(np);
                         } else {
                             p.path_edit = p.path.display().to_string();
+                            go_failed.set(true);
                         }
                     }
                 });
@@ -739,9 +862,8 @@ impl CommanderApp {
                 // File table.
                 let sort_key = p.sort;
                 let ascending = p.ascending;
-                let dir_color = egui::Color32::from_rgb(255, 200, 100);
+                let dir_color = dir_color(ui);
                 let sort_click = Cell::new(None::<SortClick>);
-                let open_ext = RefCell::new(None::<PathBuf>);
 
                 TableBuilder::new(ui)
                     .striped(true)
@@ -750,7 +872,7 @@ impl CommanderApp {
                     .column(Column::auto().resizable(true))
                     .column(Column::auto())
                     .column(Column::auto())
-                    .header(20.0, |mut header| {
+                    .header(22.0, |mut header| {
                         header.col(|ui| {
                             if sort_header(ui, "Name", sort_key, SortKey::Name, ascending) {
                                 sort_click.set(Some(SortClick {
@@ -800,19 +922,40 @@ impl CommanderApp {
                                 e.ext_lower()
                             };
 
-                            body.row(18.0, |mut row| {
+                            body.row(20.0, |mut row| {
                                 row.set_selected(is_sel || is_cur);
 
                                 // Name cell (primary interaction).
                                 row.col(|ui| {
+                                    // Keep the keyboard cursor visible while
+                                    // navigating with the arrow keys.
+                                    if is_cur {
+                                        ui.scroll_to_cursor(None);
+                                    }
                                     let mut txt = egui::RichText::new(&name);
                                     txt = if is_dir {
                                         txt.strong().color(dir_color)
                                     } else {
                                         txt
                                     };
-                                    let r = ui.selectable_label(is_sel, txt);
+                                    // Selectable label plus an invisible click
+                                    // catcher over the rest of the cell, so the
+                                    // entire line is clickable.
+                                    let r = ui
+                                        .horizontal(|ui| {
+                                            let r = ui.selectable_label(is_sel, txt);
+                                            let (_, catcher) = ui.allocate_exact_size(
+                                                egui::vec2(
+                                                    ui.available_width(),
+                                                    ui.available_height(),
+                                                ),
+                                                egui::Sense::click(),
+                                            );
+                                            r.union(catcher)
+                                        })
+                                        .inner;
                                     if r.clicked() {
+                                        clicked.set(true);
                                         let mods = ui.input(|i| i.modifiers);
                                         if mods.ctrl {
                                             if is_sel {
@@ -836,25 +979,88 @@ impl CommanderApp {
                                         }
                                     }
                                     if r.double_clicked() {
+                                        clicked.set(true);
                                         if is_dir {
                                             p.set_path(path.clone());
                                         } else {
                                             *open_ext.borrow_mut() = Some(path.clone());
                                         }
                                     }
+                                    // Right-click menu (row actions needing
+                                    // `self` are deferred via `row_action`).
+                                    r.context_menu(|ui| {
+                                        clicked.set(true);
+                                        if ui.button(if is_dir { "Open" } else { "Open with system app" }).clicked() {
+                                            if is_dir {
+                                                p.set_path(path.clone());
+                                            } else {
+                                                *open_ext.borrow_mut() = Some(path.clone());
+                                            }
+                                            ui.close_menu();
+                                        }
+                                        if !is_dir && ui.button("Open in viewer").clicked() {
+                                            row_action.borrow_mut().replace(RowAction::View(path.clone()));
+                                            ui.close_menu();
+                                        }
+                                        ui.separator();
+                                        if ui.button("Copy to other panel").clicked() {
+                                            row_action.borrow_mut().replace(RowAction::CopyTo(path.clone()));
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("Rename…").clicked() {
+                                            row_action.borrow_mut().replace(RowAction::Rename(path.clone()));
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("Delete…").clicked() {
+                                            row_action.borrow_mut().replace(RowAction::Delete(path.clone()));
+                                            ui.close_menu();
+                                        }
+                                        ui.separator();
+                                        if ui.button("Copy name").clicked() {
+                                            ui.ctx().copy_text(name.clone());
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("Copy full path").clicked() {
+                                            ui.ctx().copy_text(path.display().to_string());
+                                            ui.close_menu();
+                                        }
+                                    });
                                 });
                                 row.col(|ui| {
-                                    if ui.selectable_label(is_sel, fmt_size(size)).clicked() {
+                                    let r = ui
+                                        .horizontal(|ui| {
+                                            let r = ui.selectable_label(is_sel, fmt_size(size));
+                                            let (_, catcher) = ui.allocate_exact_size(
+                                                egui::vec2(
+                                                    ui.available_width(),
+                                                    ui.available_height(),
+                                                ),
+                                                egui::Sense::click(),
+                                            );
+                                            r.union(catcher)
+                                        })
+                                        .inner;
+                                    if r.clicked() {
                                         p.selected.clear();
                                         p.selected.insert(path.clone());
                                         p.cursor = vi;
                                     }
                                 });
                                 row.col(|ui| {
-                                    if ui
-                                        .selectable_label(is_sel, fmt_time(modified))
-                                        .clicked()
-                                    {
+                                    let r = ui
+                                        .horizontal(|ui| {
+                                            let r = ui.selectable_label(is_sel, fmt_time(modified));
+                                            let (_, catcher) = ui.allocate_exact_size(
+                                                egui::vec2(
+                                                    ui.available_width(),
+                                                    ui.available_height(),
+                                                ),
+                                                egui::Sense::click(),
+                                            );
+                                            r.union(catcher)
+                                        })
+                                        .inner;
+                                    if r.clicked() {
                                         p.selected.clear();
                                         p.selected.insert(path.clone());
                                         p.cursor = vi;
@@ -866,7 +1072,20 @@ impl CommanderApp {
                                     } else {
                                         ext.clone()
                                     };
-                                    if ui.selectable_label(is_sel, t).clicked() {
+                                    let r = ui
+                                        .horizontal(|ui| {
+                                            let r = ui.selectable_label(is_sel, t);
+                                            let (_, catcher) = ui.allocate_exact_size(
+                                                egui::vec2(
+                                                    ui.available_width(),
+                                                    ui.available_height(),
+                                                ),
+                                                egui::Sense::click(),
+                                            );
+                                            r.union(catcher)
+                                        })
+                                        .inner;
+                                    if r.clicked() {
                                         p.selected.clear();
                                         p.selected.insert(path.clone());
                                         p.cursor = vi;
@@ -891,21 +1110,70 @@ impl CommanderApp {
 
                 // Panel footer.
                 ui.add_space(2.0);
-                let (dirs, files, bytes) = p.stats();
-                let (sn, sbytes) = p.selected_stats();
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} dirs, {} files, {} | selected: {}, {}",
-                        dirs,
-                        files,
-                        fmt_size(bytes),
-                        sn,
-                        fmt_size(sbytes)
-                    ))
-                    .small()
-                    .weak(),
-                );
+                if p.visible.is_empty() {
+                    let msg = match &p.load_error {
+                        Some(e) => format!("Cannot open folder: {}", e),
+                        None => "This folder is empty".to_string(),
+                    };
+                    ui.label(egui::RichText::new(msg).weak().italics());
+                } else {
+                    let (dirs, files, bytes) = p.stats();
+                    let (sn, sbytes) = p.selected_stats();
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} dirs, {} files, {} | selected: {}, {}",
+                            dirs,
+                            files,
+                            fmt_size(bytes),
+                            sn,
+                            fmt_size(sbytes)
+                        ))
+                        .small()
+                        .weak(),
+                    );
+                }
             });
+
+        // Apply deferred actions collected while drawing (they need `self`,
+        // which was borrowed by the frame closures above).
+        if go_failed.get() {
+            self.toast("Folder not found", true);
+        }
+        if clicked.get() {
+            self.active = idx;
+        }
+        let action = row_action.borrow_mut().take();
+        if let Some(action) = action {
+            match action {
+                RowAction::View(path) => {
+                    if self.viewer_busy_with_edits() {
+                        self.toast("Save or discard the open editor first", true);
+                    } else {
+                        self.viewer = Some(Viewer::open(&path, false));
+                    }
+                }
+                RowAction::CopyTo(path) => {
+                    self.active = idx;
+                    self.focus_op_selection(idx, &path);
+                    self.open_copy_modal();
+                }
+                RowAction::Rename(path) => {
+                    self.active = idx;
+                    let name = self.panels[idx]
+                        .entries
+                        .iter()
+                        .find(|e| e.path == path)
+                        .map(|e| e.name.clone())
+                        .unwrap_or_default();
+                    self.modal = Some(Modal::Rename { path, name });
+                }
+                RowAction::Delete(path) => {
+                    self.active = idx;
+                    self.focus_op_selection(idx, &path);
+                    self.open_delete_modal();
+                }
+            }
+        }
     }
 
     fn show_modal(&mut self, ctx: &egui::Context) {
@@ -1032,7 +1300,7 @@ impl CommanderApp {
                         .collapsible(false)
                         .show(ctx, |ui| {
                             ui.colored_label(
-                                egui::Color32::from_rgb(255, 140, 100),
+                                ui.visuals().warn_fg_color,
                                 format!("Permanently delete {} item(s)?", count),
                             );
                             for name in preview {
@@ -1041,6 +1309,32 @@ impl CommanderApp {
                             ui.add_space(6.0);
                             ui.horizontal(|ui| {
                                 if ui.button("Delete").clicked() {
+                                    confirmed = true;
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    closed = true;
+                                }
+                            });
+                        });
+                    if !open {
+                        closed = true;
+                    }
+                }
+                Modal::DiscardViewer => {
+                    let mut open = true;
+                    let name = self
+                        .viewer
+                        .as_ref()
+                        .map(|v| v.name.clone())
+                        .unwrap_or_default();
+                    egui::Window::new("Unsaved changes")
+                        .open(&mut open)
+                        .collapsible(false)
+                        .show(ctx, |ui| {
+                            ui.label(format!("Close '{}' without saving?", name));
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Discard changes").clicked() {
                                     confirmed = true;
                                 }
                                 if ui.button("Cancel").clicked() {
@@ -1066,12 +1360,36 @@ impl CommanderApp {
             return;
         }
         let mut open = true;
+        // Tools report "navigate the active panel here" requests via this
+        // out-parameter (they cannot reach the panels themselves).
+        let mut nav: Option<PathBuf> = None;
         egui::Window::new("Utility toolbox")
             .open(&mut open)
             .default_size([700.0, 500.0])
             .show(ctx, |ui| {
-                self.toolbox.ui(ui, &mut self.jobs);
+                self.toolbox.ui(ui, &mut self.jobs, &mut nav);
             });
+        if let Some(target) = nav {
+            let p = &mut self.panels[self.active];
+            if target.is_dir() {
+                p.set_path(target);
+            } else {
+                let file = target.clone();
+                let par = file
+                    .parent()
+                    .map(|par| par.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("/"));
+                p.set_path(par);
+                if let Some(vi) = p
+                    .visible
+                    .iter()
+                    .position(|&vi| p.entries[vi].path == file)
+                {
+                    p.cursor = vi;
+                    p.selected.insert(file);
+                }
+            }
+        }
         if !open {
             self.toolbox.show = false;
         }
@@ -1082,7 +1400,9 @@ impl CommanderApp {
             return;
         }
         let mut open = true;
+        let mut dirty = false;
         if let Some(v) = self.viewer.as_mut() {
+            dirty = v.dirty;
             let title = format!("{}{}", if v.dirty { "* " } else { "" }, v.name);
             egui::Window::new(title)
                 .open(&mut open)
@@ -1090,7 +1410,13 @@ impl CommanderApp {
                 .show(ctx, |ui| v.ui(ui));
         }
         if !open {
-            self.viewer = None;
+            if dirty {
+                // Closing over unsaved edits asks for confirmation instead of
+                // silently dropping them.
+                self.modal = Some(Modal::DiscardViewer);
+            } else {
+                self.viewer = None;
+            }
         }
     }
 
@@ -1151,6 +1477,17 @@ impl CommanderApp {
 }
 
 impl eframe::App for CommanderApp {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(
+            storage,
+            "prefs",
+            &Prefs {
+                dark: self.dark,
+                show_hidden: self.panels[0].show_hidden,
+            },
+        );
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_jobs(ctx);
         self.handle_keys(ctx);
@@ -1169,12 +1506,260 @@ impl eframe::App for CommanderApp {
 fn sort_header(ui: &mut egui::Ui, label: &str, current: SortKey, key: SortKey, ascending: bool) -> bool {
     let arrow = if current == key {
         if ascending {
-            " ^"
+            " ↑"
         } else {
-            " v"
+            " ↓"
         }
     } else {
         ""
     };
     ui.button(format!("{}{}", label, arrow)).clicked()
+}
+
+/// Accent color for directory names, readable in both themes.
+fn dir_color(ui: &egui::Ui) -> egui::Color32 {
+    if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(255, 200, 100)
+    } else {
+        egui::Color32::from_rgb(150, 90, 0)
+    }
+}
+
+/// The vector glyphs drawn in the top toolbar (see `icon_button`).
+#[derive(Clone, Copy)]
+enum IconKind {
+    View,
+    Edit,
+    Copy,
+    Move,
+    NewFolder,
+    Rename,
+    Delete,
+    OpenExternal,
+}
+
+/// Square toolbar button with a hand-drawn vector icon. Returns true on click.
+/// Icons are painted with the egui painter (no font glyph or asset involved),
+/// so they always match the active theme.
+fn icon_button(ui: &mut egui::Ui, kind: IconKind, enabled: bool, tip: &str) -> bool {
+    let visuals = ui.visuals().clone();
+    let h = ui.spacing().interact_size.y;
+    let (rect, mut resp) = ui.allocate_exact_size(egui::vec2(h * 1.6, h), egui::Sense::click());
+
+    let fg = if enabled {
+        visuals.strong_text_color()
+    } else {
+        visuals.widgets.inactive.fg_stroke.color
+    };
+    let (bg, stroke) = if !enabled {
+        (egui::Color32::TRANSPARENT, egui::Stroke::NONE)
+    } else if resp.is_pointer_button_down_on() {
+        (
+            visuals.widgets.active.bg_fill,
+            visuals.widgets.active.bg_stroke,
+        )
+    } else if resp.hovered() {
+        (
+            visuals.widgets.hovered.bg_fill,
+            visuals.widgets.hovered.bg_stroke,
+        )
+    } else {
+        (
+            visuals.widgets.inactive.bg_fill,
+            visuals.widgets.inactive.bg_stroke,
+        )
+    };
+    let rounding = visuals.widgets.inactive.rounding;
+    ui.painter().rect_filled(rect, rounding, bg);
+    if stroke.width > 0.0 {
+        ui.painter().rect_stroke(rect, rounding, stroke);
+    }
+    draw_icon(ui.painter(), kind, rect.shrink(4.0), fg);
+
+    resp = resp.on_hover_text(tip);
+    resp.on_disabled_hover_text(format!("{} (nothing selected)", tip))
+        .clicked()
+}
+
+/// Paint one toolbar glyph inside `r` using simple shapes.
+fn draw_icon(p: &egui::Painter, kind: IconKind, r: egui::Rect, c: egui::Color32) {
+    let st = egui::Stroke::new(1.5_f32, c);
+    match kind {
+        // Magnifier (inspect / view).
+        IconKind::View => {
+            let cc = egui::pos2(r.left() + r.width() * 0.38, r.top() + r.height() * 0.38);
+            let rad = r.width() * 0.32;
+            p.circle_stroke(cc, rad, st);
+            p.line_segment(
+                [
+                    egui::pos2(cc.x + rad * 0.72, cc.y + rad * 0.72),
+                    egui::pos2(r.right() - 0.5, r.bottom() - 0.5),
+                ],
+                st,
+            );
+        }
+        // Pencil.
+        IconKind::Edit => {
+            let a = egui::pos2(r.left() + 1.0, r.bottom() - 3.0);
+            let b = egui::pos2(r.right() - 3.0, r.top() + 1.0);
+            p.line_segment([a, b], egui::Stroke::new(2.0_f32, c));
+            p.add(egui::Shape::convex_polygon(
+                vec![
+                    a,
+                    egui::pos2(a.x + 3.0, r.bottom() - 0.5),
+                    egui::pos2(r.left() + 0.5, r.bottom() - 0.5),
+                ],
+                c,
+                egui::Stroke::NONE,
+            ));
+        }
+        // Two stacked sheets.
+        IconKind::Copy => {
+            let w = r.width() * 0.55;
+            let back = egui::Rect::from_min_size(
+                egui::pos2(r.left(), r.top()),
+                egui::vec2(w, w * 1.05),
+            );
+            let front = egui::Rect::from_min_size(
+                egui::pos2(r.left() + w * 0.45, r.top() + w * 0.45),
+                egui::vec2(w, w * 1.05),
+            );
+            p.rect_stroke(back, 1.5, st);
+            p.rect_filled(front, 1.5, c);
+        }
+        // Box with arrow leaving to the right.
+        IconKind::Move => {
+            let bw = r.width() * 0.5;
+            let bh = r.height() * 0.56;
+            let b = egui::Rect::from_min_size(
+                egui::pos2(r.left(), r.center().y - bh / 2.0),
+                egui::vec2(bw, bh),
+            );
+            p.rect_stroke(b, 1.5, st);
+            let y = b.center().y;
+            p.line_segment([egui::pos2(b.center().x, y), egui::pos2(r.right(), y)], st);
+            p.add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(r.right(), y),
+                    egui::pos2(r.right() - 3.5, y - 2.5),
+                    egui::pos2(r.right() - 3.5, y + 2.5),
+                ],
+                c,
+                egui::Stroke::NONE,
+            ));
+        }
+        // Folder outline with a plus sign.
+        IconKind::NewFolder => {
+            let fw = r.width() * 0.62;
+            let fh = r.height() * 0.52;
+            let x0 = r.left();
+            let y0 = r.bottom() - fh;
+            let tab_w = fw * 0.38;
+            let tab_h = fh * 0.45;
+            let mut pts = vec![
+                egui::pos2(x0, r.bottom()),
+                egui::pos2(x0, y0 - tab_h),
+                egui::pos2(x0 + tab_w, y0 - tab_h),
+                egui::pos2(x0 + tab_w + tab_h * 0.7, y0),
+                egui::pos2(x0 + fw, y0),
+                egui::pos2(x0 + fw, r.bottom()),
+                egui::pos2(x0, r.bottom()),
+            ];
+            p.add(egui::Shape::line(pts, st));
+            let px = r.right() - 1.5;
+            let py = r.top() + 2.0;
+            let s = r.width() * 0.16;
+            p.line_segment([egui::pos2(px - s, py), egui::pos2(px + s, py)], st);
+            p.line_segment([egui::pos2(px, py - s), egui::pos2(px, py + s)], st);
+        }
+        // I-beam text cursor.
+        IconKind::Rename => {
+            let cx = r.center().x;
+            let top = r.top() + 1.0;
+            let bot = r.bottom() - 1.0;
+            p.line_segment([egui::pos2(cx, top), egui::pos2(cx, bot)], st);
+            let s = r.width() * 0.2;
+            for y in [top, bot] {
+                p.line_segment([egui::pos2(cx - s, y), egui::pos2(cx + s, y)], st);
+            }
+        }
+        // Trash can.
+        IconKind::Delete => {
+            let w = r.width() * 0.62;
+            let body = egui::Rect::from_min_size(
+                egui::pos2(r.center().x - w / 2.0, r.top() + r.height() * 0.32),
+                egui::vec2(w, r.height() * 0.6),
+            );
+            p.rect_stroke(body, 1.5, st);
+            p.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(body.left() - 2.0, r.top() + r.height() * 0.22),
+                    egui::vec2(w + 4.0, 1.5),
+                ),
+                0.5,
+                c,
+            );
+            p.rect_stroke(
+                egui::Rect::from_min_size(
+                    egui::pos2(r.center().x - w * 0.18, r.top()),
+                    egui::vec2(w * 0.36, r.height() * 0.24),
+                ),
+                1.0,
+                st,
+            );
+            for dx in [-w * 0.16_f32, w * 0.16] {
+                let x = body.center().x + dx;
+                p.line_segment(
+                    [
+                        egui::pos2(x, body.top() + 2.0),
+                        egui::pos2(x, body.bottom() - 2.0),
+                    ],
+                    st,
+                );
+            }
+        }
+        // Box with an arrow escaping to the top-right.
+        IconKind::OpenExternal => {
+            let w = r.width() * 0.55;
+            let bx = egui::Rect::from_min_size(
+                egui::pos2(r.left(), r.bottom() - w),
+                egui::vec2(w, w),
+            );
+            let pts = vec![
+                egui::pos2(bx.right(), bx.bottom()),
+                egui::pos2(bx.left(), bx.bottom()),
+                egui::pos2(bx.left(), bx.top()),
+                egui::pos2(bx.center().x, bx.top()),
+            ];
+            p.add(egui::Shape::line(pts, st));
+            let from = egui::pos2(bx.center().x, bx.center().y);
+            let to = egui::pos2(r.right() - 1.0, r.top() + 1.0);
+            p.line_segment([from, to], st);
+            p.add(egui::Shape::convex_polygon(
+                vec![
+                    to,
+                    egui::pos2(to.x - 4.0, to.y + 0.5),
+                    egui::pos2(to.x - 0.5, to.y + 4.0),
+                ],
+                c,
+                egui::Stroke::NONE,
+            ));
+        }
+    }
+}
+
+/// Persisted preferences, loaded at startup and written on shutdown.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Prefs {
+    dark: bool,
+    show_hidden: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            dark: true,
+            show_hidden: false,
+        }
+    }
 }

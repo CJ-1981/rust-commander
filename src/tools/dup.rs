@@ -24,7 +24,7 @@ pub struct DupTool {
 }
 
 impl DupTool {
-    pub fn ui(&mut self, ui: &mut egui::Ui, jobs: &mut Vec<Job>) {
+    pub fn ui(&mut self, ui: &mut egui::Ui, jobs: &mut Vec<Job>, nav: &mut Option<PathBuf>) {
         ui.add_space(4.0);
         ui.label("Find duplicate files (identical content) inside a folder tree.");
         ui.add_space(4.0);
@@ -64,7 +64,7 @@ impl DupTool {
         }
 
         if let Some(e) = &self.error {
-            ui.colored_label(egui::Color32::from_rgb(255, 120, 120), format!("Error: {}", e));
+            ui.colored_label(ui.visuals().error_fg_color, format!("Error: {}", e));
         }
 
         if !self.groups.is_empty() {
@@ -95,11 +95,15 @@ impl DupTool {
                             fmt_size(g.size * (g.files.len() as u64 - 1))
                         ));
                         for f in &g.files {
-                            ui.label(
+                            let r = ui.selectable_label(
+                                false,
                                 egui::RichText::new(f.display().to_string())
                                     .small()
                                     .weak(),
                             );
+                            if r.double_clicked() {
+                                *nav = Some(f.clone());
+                            }
                         }
                         ui.add_space(6.0);
                     }
@@ -219,7 +223,7 @@ impl DupTool {
                 }
             }
 
-            groups.sort_by(|a, b| b.size.cmp(&a.size));
+            groups.sort_by_key(|g| std::cmp::Reverse(g.size));
             let mut s = state.lock().unwrap();
             s.finished = true;
             s.outcome = Some(Outcome::Dup {

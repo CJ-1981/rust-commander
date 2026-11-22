@@ -32,7 +32,9 @@ pub struct Toolbox {
 }
 
 impl Toolbox {
-    pub fn ui(&mut self, ui: &mut egui::Ui, jobs: &mut Vec<Job>) {
+    /// Draw the toolbox. `nav` receives an optional path the user asked to
+    /// open in a file panel (double-clicked search/duplicate results).
+    pub fn ui(&mut self, ui: &mut egui::Ui, jobs: &mut Vec<Job>, nav: &mut Option<std::path::PathBuf>) {
         ui.horizontal(|ui| {
             let tabs = [
                 (ToolTab::Hash, "Hash calculator"),
@@ -50,8 +52,8 @@ impl Toolbox {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             match self.tab {
                 ToolTab::Hash => self.hash.ui(ui, jobs),
-                ToolTab::Search => self.search.ui(ui, jobs),
-                ToolTab::Duplicates => self.dup.ui(ui, jobs),
+                ToolTab::Search => self.search.ui(ui, jobs, nav),
+                ToolTab::Duplicates => self.dup.ui(ui, jobs, nav),
                 ToolTab::System => self.sys.ui(ui),
             }
         });

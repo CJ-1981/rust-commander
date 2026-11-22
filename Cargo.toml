@@ -10,10 +10,11 @@ keywords = ["file-manager", "dual-pane", "commander", "gui", "egui"]
 categories = ["gui", "filesystem"]
 
 [dependencies]
-eframe = "0.30"
+eframe = { version = "0.30", features = ["persistence"] }
 egui_extras = "0.30"
 image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = "0.15"
+serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 md-5 = "0.10"
 open = "5"

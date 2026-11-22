@@ -23,7 +23,7 @@ pub struct SearchTool {
 }
 
 impl SearchTool {
-    pub fn ui(&mut self, ui: &mut egui::Ui, jobs: &mut Vec<Job>) {
+    pub fn ui(&mut self, ui: &mut egui::Ui, jobs: &mut Vec<Job>, nav: &mut Option<PathBuf>) {
         ui.add_space(4.0);
         ui.label("Find files and folders by name (case-insensitive, recursive).");
         ui.add_space(4.0);
@@ -52,11 +52,9 @@ impl SearchTool {
             );
             start = ui.button("Search").clicked()
                 || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-            if self.running {
-                if ui.button("Cancel").clicked() {
-                    if let Some(j) = jobs.iter_mut().rev().find(|j| j.kind == JobKind::Search) {
-                        j.cancel();
-                    }
+            if self.running && ui.button("Cancel").clicked() {
+                if let Some(j) = jobs.iter_mut().rev().find(|j| j.kind == JobKind::Search) {
+                    j.cancel();
                 }
             }
         });
@@ -74,13 +72,13 @@ impl SearchTool {
         }
 
         if let Some(e) = &self.error {
-            ui.colored_label(egui::Color32::from_rgb(255, 120, 120), format!("Error: {}", e));
+            ui.colored_label(ui.visuals().error_fg_color, format!("Error: {}", e));
         }
 
         if !self.hits.is_empty() || self.scanned > 0 {
             ui.separator();
             ui.label(format!(
-                "{} result(s){} after scanning {} entr{}",
+                "{} result(s){} after scanning {} entr{} - double-click to open in panel",
                 self.hits.len(),
                 if self.truncated { " (truncated)" } else { "" },
                 self.scanned,
@@ -98,7 +96,10 @@ impl SearchTool {
                             } else {
                                 h.name.clone()
                             };
-                            ui.monospace(label);
+                            let r = ui.selectable_label(false, egui::RichText::new(label).monospace());
+                            if r.double_clicked() {
+                                *nav = Some(h.path.clone());
+                            }
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 ui.small(fmt_size(h.size));
                             });
@@ -186,7 +187,7 @@ impl SearchTool {
                             break 'outer;
                         }
                     }
-                    if scanned % 200 == 0 {
+                    if scanned.is_multiple_of(200) {
                         if let Ok(mut s) = state.lock() {
                             s.done = hits.len() as u64;
                             s.current = format!("scanned {} entries", scanned);

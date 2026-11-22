@@ -71,7 +71,7 @@ impl HashTool {
         }
 
         if let Some(e) = &self.error {
-            ui.colored_label(egui::Color32::from_rgb(255, 120, 120), format!("Error: {}", e));
+            ui.colored_label(ui.visuals().error_fg_color, format!("Error: {}", e));
         }
         if let Some(m) = &self.md5 {
             ui.horizontal(|ui| {

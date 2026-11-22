@@ -88,7 +88,7 @@ impl Viewer {
         ui.separator();
 
         if let Some(e) = &self.error {
-            ui.colored_label(egui::Color32::from_rgb(255, 130, 130), e);
+            ui.colored_label(ui.visuals().error_fg_color, e);
             ui.add_space(4.0);
         }
 
