@@ -75,6 +75,8 @@ pub struct CommanderApp {
     panels: [FilePanel; 2],
     active: usize,
     dark: bool,
+    /// Width of the left pane (the divider position); `None` = half/half.
+    pane_width: Option<f32>,
     jobs: Vec<Job>,
     modal: Option<Modal>,
     toolbox: Toolbox,
@@ -109,6 +111,7 @@ impl CommanderApp {
             panels: [FilePanel::new(start.clone()), FilePanel::new(start)],
             active: 0,
             dark: prefs.dark,
+            pane_width: prefs.pane_width,
             jobs: Vec::new(),
             modal: None,
             toolbox: Toolbox::default(),
@@ -636,6 +639,14 @@ impl CommanderApp {
                             self.toolbox.dup.root = self.panels[self.active].path.display().to_string();
                         }
                     }
+                    if ui.button("Multi-file rename").clicked() {
+                        self.toolbox.show = true;
+                        self.toolbox.tab = ToolTab::Rename;
+                        let items = self.op_items();
+                        self.toolbox.rename.files =
+                            items.iter().map(|e| e.path.clone()).collect();
+                        self.toolbox.rename.last_result = None;
+                    }
                     if ui.button("System info").clicked() {
                         self.toolbox.show = true;
                         self.toolbox.tab = ToolTab::System;
@@ -770,17 +781,74 @@ impl CommanderApp {
     }
 
     fn show_panels(&mut self, ctx: &egui::Context) {
-        // SidePanel/CentralPanel give each pane a top-down layout. Do NOT wrap
-        // the panes in ui.horizontal + allocate_ui: allocate_ui inherits the
-        // parent's horizontal layout, which flattens each pane's contents
-        // (path bar, toolbar, table) into one row with a collapsed Name column.
-        egui::SidePanel::left("pane_left")
-            .resizable(true)
-            .min_width(320.0)
-            .default_width((ctx.screen_rect().width() * 0.45).max(360.0))
-            .show(ctx, |ui| self.draw_panel(ui, 0));
-        egui::CentralPanel::default().show(ctx, |ui| self.draw_panel(ui, 1));
+        // Both panes are drawn inside one CentralPanel with a hand-managed
+        // split. egui's SidePanel resize state snapped back after dragging
+        // (its stored rect is re-derived from the content rect each frame);
+        // owning the width here is deterministic. Children use an explicit
+        // top-down layout: plain allocate_ui would inherit this horizontal
+        // layout and flatten each pane into a single row.
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let avail = ui.available_size();
+            let default_w = (avail.x * 0.5).round();
+            let mut width = self
+                .pane_width
+                .unwrap_or(default_w)
+                .clamp(320.0, (avail.x - 320.0).max(360.0));
+
+            let top_down = egui::Layout::top_down(egui::Align::Min);
+            ui.horizontal(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(width, avail.y),
+                    top_down,
+                    |ui| self.draw_panel(ui, 0),
+                );
+
+                // Divider: thin line with a generous grab area.
+                let (drect, dresp) =
+                    ui.allocate_exact_size(egui::vec2(10.0, avail.y), egui::Sense::drag());
+                let accent = ui.visuals().selection.stroke.color;
+                let (line_color, line_w) = if dresp.dragged() {
+                    (accent, 2.0_f32)
+                } else if dresp.hovered() {
+                    (accent.gamma_multiply(0.7), 2.0)
+                } else {
+                    (ui.visuals().widgets.noninteractive.bg_stroke.color, 1.0)
+                };
+                let x = drect.center().x;
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(x, drect.top() + 6.0),
+                        egui::pos2(x, drect.bottom() - 6.0),
+                    ],
+                    egui::Stroke::new(line_w, line_color),
+                );
+                if dresp.hovered() || dresp.dragged() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                }
+                if dresp.double_clicked() {
+                    width = default_w;
+                }
+                if dresp.dragged() {
+                    if let Some(p) = dresp.interact_pointer_pos() {
+                        // Pane 0 starts where the divider region begins minus
+                        // its current width.
+                        let pane0_left = drect.left() - width;
+                        width = (p.x - pane0_left)
+                            .clamp(320.0, (avail.x - 320.0).max(360.0));
+                    }
+                }
+
+                ui.allocate_ui_with_layout(
+                    egui::vec2(avail.x - width - 10.0, avail.y),
+                    top_down,
+                    |ui| self.draw_panel(ui, 1),
+                );
+            });
+
+            self.pane_width = Some(width);
+        });
     }
+
 
     fn draw_panel(&mut self, ui: &mut egui::Ui, idx: usize) {
         let active = self.active == idx;
@@ -802,6 +870,10 @@ impl CommanderApp {
         let clicked = Cell::new(false);
         let row_action = RefCell::new(None::<RowAction>);
         let open_ext = RefCell::new(None::<PathBuf>);
+        // In-row navigation must wait for the table pass to end: set_path
+        // replaces entries/visible, and the loop below indexes them with
+        // bounds taken before the pass (panicked on folder double-click).
+        let nav = RefCell::new(None::<PathBuf>);
 
         egui::Frame::default()
             .stroke(stroke)
@@ -908,7 +980,13 @@ impl CommanderApp {
                         });
                     })
                     .body(|mut body| {
-                        for vi in 0..p.visible.len() {
+                        // Row count captured up-front: rows must never mutate
+                        // the listing mid-pass (navigation is deferred instead).
+                        let row_count = p.visible.len();
+                        for vi in 0..row_count {
+                            if vi >= p.visible.len() {
+                                break;
+                            }
                             let e = &p.entries[p.visible[vi]];
                             let is_sel = p.selected.contains(&e.path);
                             let is_cur = vi == p.cursor;
@@ -983,7 +1061,7 @@ impl CommanderApp {
                                     if r.double_clicked() {
                                         clicked.set(true);
                                         if is_dir {
-                                            p.set_path(path.clone());
+                                            *nav.borrow_mut() = Some(path.clone());
                                         } else {
                                             *open_ext.borrow_mut() = Some(path.clone());
                                         }
@@ -994,7 +1072,7 @@ impl CommanderApp {
                                         clicked.set(true);
                                         if ui.button(if is_dir { "Open" } else { "Open with system app" }).clicked() {
                                             if is_dir {
-                                                p.set_path(path.clone());
+                                                *nav.borrow_mut() = Some(path.clone());
                                             } else {
                                                 *open_ext.borrow_mut() = Some(path.clone());
                                             }
@@ -1113,6 +1191,9 @@ impl CommanderApp {
                         p.ascending = true;
                     }
                     p.apply_filter_sort();
+                }
+                if let Some(path) = nav.borrow_mut().take() {
+                    p.set_path(path);
                 }
                 if let Some(path) = open_ext.borrow_mut().take() {
                     let _ = open::that(&path);
@@ -1371,14 +1452,20 @@ impl CommanderApp {
         }
         let mut open = true;
         // Tools report "navigate the active panel here" requests via this
-        // out-parameter (they cannot reach the panels themselves).
+        // out-parameter (they cannot reach the panels themselves); `changed`
+        // is set when a tool has modified files on disk.
         let mut nav: Option<PathBuf> = None;
+        let mut changed = false;
         egui::Window::new("Utility toolbox")
             .open(&mut open)
             .default_size([700.0, 500.0])
             .show(ctx, |ui| {
-                self.toolbox.ui(ui, &mut self.jobs, &mut nav);
+                self.toolbox.ui(ui, &mut self.jobs, &mut nav, &mut changed);
             });
+        if changed {
+            self.reload_both();
+            self.toast("Renamed files - panels refreshed", false);
+        }
         if let Some(target) = nav {
             let p = &mut self.panels[self.active];
             if target.is_dir() {
@@ -1494,6 +1581,7 @@ impl eframe::App for CommanderApp {
             &Prefs {
                 dark: self.dark,
                 show_hidden: self.panels[0].show_hidden,
+                pane_width: self.pane_width,
             },
         );
     }
@@ -1590,6 +1678,7 @@ fn drag_select(ui: &mut egui::Ui, p: &mut FilePanel, vi: usize, path: &std::path
 struct Prefs {
     dark: bool,
     show_hidden: bool,
+    pane_width: Option<f32>,
 }
 
 impl Default for Prefs {
@@ -1597,6 +1686,7 @@ impl Default for Prefs {
         Self {
             dark: true,
             show_hidden: false,
+            pane_width: None,
         }
     }
 }
