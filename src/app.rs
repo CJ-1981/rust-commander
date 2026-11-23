@@ -221,8 +221,9 @@ impl CommanderApp {
         }
     }
 
-    /// First selected plain file in a pane (or the cursor entry if it is a
-    /// file) — used to prefill the compare tool.
+    /// A plain file to prefill the compare tool with: the first selected
+    /// file, else the cursor entry if it is a file, else the first visible
+    /// file in the listing.
     fn first_file_entry(&self, pane_idx: usize) -> Option<FileEntry> {
         let p = self.panes[pane_idx].cur_ref();
         for &vi in &p.visible {
@@ -231,8 +232,13 @@ impl CommanderApp {
                 return Some(e.clone());
             }
         }
-        p.visible_entry(p.cursor)
-            .filter(|e| !e.is_dir)
+        if let Some(e) = p.visible_entry(p.cursor).filter(|e| !e.is_dir) {
+            return Some(e.clone());
+        }
+        p.visible
+            .iter()
+            .map(|&vi| &p.entries[vi])
+            .find(|e| !e.is_dir)
             .cloned()
     }
 
@@ -881,19 +887,24 @@ impl CommanderApp {
             ui.horizontal(|ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("New folder  (F7)").clicked() {
+                        ui.close_menu();
                         self.modal = Some(Modal::Mkdir { name: String::new() });
                     }
                     if ui.button("New file  (Ctrl+N)").clicked() {
+                        ui.close_menu();
                         self.modal = Some(Modal::NewFile { name: String::new() });
                     }
                     if ui.button("Rename  (Shift+F6)").clicked() {
+                        ui.close_menu();
                         self.open_rename_modal();
                     }
                     if ui.button("Delete  (F8)").clicked() {
+                        ui.close_menu();
                         self.open_delete_modal();
                     }
                     ui.separator();
                     if ui.button("Open with system app").clicked() {
+                        ui.close_menu();
                         self.open_external_current();
                     }
                     ui.separator();
@@ -904,10 +915,12 @@ impl CommanderApp {
 
                 ui.menu_button("Tools", |ui| {
                     if ui.button("Hash calculator").clicked() {
+                        ui.close_menu();
                         self.toolbox.show = true;
                         self.toolbox.tab = ToolTab::Hash;
                     }
                     if ui.button("File search").clicked() {
+                        ui.close_menu();
                         self.toolbox.show = true;
                         self.toolbox.tab = ToolTab::Search;
                         if self.toolbox.search.root.trim().is_empty() {
@@ -915,6 +928,7 @@ impl CommanderApp {
                         }
                     }
                     if ui.button("Duplicate finder").clicked() {
+                        ui.close_menu();
                         self.toolbox.show = true;
                         self.toolbox.tab = ToolTab::Duplicates;
                         if self.toolbox.dup.root.trim().is_empty() {
@@ -922,6 +936,7 @@ impl CommanderApp {
                         }
                     }
                     if ui.button("Multi-file rename").clicked() {
+                        ui.close_menu();
                         self.toolbox.show = true;
                         self.toolbox.tab = ToolTab::Rename;
                         let items = self.op_items();
@@ -930,6 +945,7 @@ impl CommanderApp {
                         self.toolbox.rename.last_result = None;
                     }
                     if ui.button("Compare files").clicked() {
+                        ui.close_menu();
                         self.toolbox.show = true;
                         self.toolbox.tab = ToolTab::Compare;
                         self.toolbox.compare.left = self
@@ -942,6 +958,7 @@ impl CommanderApp {
                             .unwrap_or_default();
                     }
                     if ui.button("System info").clicked() {
+                        ui.close_menu();
                         self.toolbox.show = true;
                         self.toolbox.tab = ToolTab::System;
                     }
@@ -950,6 +967,7 @@ impl CommanderApp {
                 ui.menu_button("View", |ui| {
                     let mut hid = self.panes[0].cur_ref().show_hidden;
                     if ui.checkbox(&mut hid, "Show hidden files").changed() {
+                        ui.close_menu();
                         self.set_hidden(hid);
                     }
                     let label = if self.dark {
@@ -958,6 +976,7 @@ impl CommanderApp {
                         "Switch to dark theme"
                     };
                     if ui.button(label).clicked() {
+                        ui.close_menu();
                         self.dark = !self.dark;
                         let dark = self.dark;
                         ctx.set_visuals(if dark {
@@ -970,6 +989,7 @@ impl CommanderApp {
 
                 ui.menu_button("Help", |ui| {
                     if ui.button("Keyboard shortcuts").clicked() {
+                        ui.close_menu();
                         self.show_help = true;
                     }
                 });
@@ -1307,6 +1327,7 @@ impl CommanderApp {
                     ui.menu_button("Drives", |ui| {
                         for root in list_roots() {
                             if ui.button(root.display().to_string()).clicked() {
+                                ui.close_menu();
                                 p.set_path(root);
                             }
                         }
@@ -1330,6 +1351,7 @@ impl CommanderApp {
                                     .on_hover_text(&bm.path)
                                     .clicked()
                                 {
+                                    ui.close_menu();
                                     p.set_path(PathBuf::from(&bm.path));
                                 }
                                 if ui.small_button("✕").on_hover_text("Remove").clicked() {
@@ -1341,6 +1363,7 @@ impl CommanderApp {
                             ui.separator();
                         }
                         if ui.button("Add current folder…").clicked() {
+                            ui.close_menu();
                             add_bm.set(true);
                         }
                     });
@@ -2164,6 +2187,22 @@ impl CommanderApp {
         if changed {
             self.reload_both();
             self.toast("Renamed files - panels refreshed", false);
+        }
+        // The compare tool reads its two files from the pane selections; fill
+        // any empty field so the tab is usable however it was opened.
+        if self.toolbox.tab == ToolTab::Compare {
+            if self.toolbox.compare.left.is_empty() {
+                self.toolbox.compare.left = self
+                    .first_file_entry(0)
+                    .map(|e| e.path.display().to_string())
+                    .unwrap_or_default();
+            }
+            if self.toolbox.compare.right.is_empty() {
+                self.toolbox.compare.right = self
+                    .first_file_entry(1)
+                    .map(|e| e.path.display().to_string())
+                    .unwrap_or_default();
+            }
         }
         if let Some(target) = nav {
             let p = self.panes[self.active].cur();

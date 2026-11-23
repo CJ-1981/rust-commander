@@ -40,7 +40,7 @@ impl CompareTool {
             ui.add(
                 egui::TextEdit::singleline(&mut self.left)
                     .hint_text("Path to file...")
-                    .desired_width(ui.available_width() - 120.0),
+                    .desired_width(380.0),
             );
             if ui.button("Browse...").clicked() {
                 if let Some(f) = rfd::FileDialog::new().pick_file() {
@@ -52,7 +52,7 @@ impl CompareTool {
             ui.add(
                 egui::TextEdit::singleline(&mut self.right)
                     .hint_text("Path to file...")
-                    .desired_width(ui.available_width() - 120.0),
+                    .desired_width(380.0),
             );
             if ui.button("Browse...").clicked() {
                 if let Some(f) = rfd::FileDialog::new().pick_file() {
