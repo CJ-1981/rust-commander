@@ -61,7 +61,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+Click", "Add to / remove from selection"),
     ("Shift+Click", "Range selection"),
     ("Press + Drag", "Range selection with the mouse"),
-    ("Double-click", "Enter folder / open file with system app"),
+    ("Double-click", "Enter folder / view file in the built-in viewer"),
     ("F3", "View file (read-only)"),
     ("F4", "Edit file"),
     ("F5", "Copy selection to opposite panel"),
@@ -1193,7 +1193,15 @@ impl CommanderApp {
                                         if is_dir {
                                             *nav.borrow_mut() = Some(path.clone());
                                         } else {
-                                            *open_ext.borrow_mut() = Some(path.clone());
+                                            // Open the built-in viewer, not the
+                                            // system app: launching another app
+                                            // steals focus mid-interaction and
+                                            // kills drag selection. External
+                                            // open stays on the toolbar/context
+                                            // menu (RowAction::View).
+                                            row_action
+                                                .borrow_mut()
+                                                .replace(RowAction::View(path.clone()));
                                         }
                                     }
                                     // Right-click menu (row actions needing
