@@ -11,12 +11,22 @@ use crate::jobs::{progress_snapshot, Job, JobKind, JobState, Outcome};
 
 const CHUNK: usize = 1 << 20; // 1 MiB
 
+/// Theme-aware green for "match" indicators.
+fn added_like_color(ui: &egui::Ui) -> egui::Color32 {
+    if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(120, 200, 140)
+    } else {
+        egui::Color32::from_rgb(0, 130, 80)
+    }
+}
+
 /// MD5 + SHA-256 checksum calculator.
 #[derive(Default)]
 pub struct HashTool {
     pub path: String,
     pub md5: Option<String>,
     pub sha256: Option<String>,
+    pub expected: String,
     pub busy: bool,
     pub error: Option<String>,
 }
@@ -90,6 +100,29 @@ impl HashTool {
                     ui.ctx().copy_text(s.clone());
                 }
             });
+        }
+
+        // Verify against an expected checksum (either algorithm matches).
+        if let (Some(md5), Some(sha256)) = (&self.md5, &self.sha256) {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Expected checksum:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.expected)
+                        .hint_text("paste MD5 or SHA-256 to verify")
+                        .desired_width(ui.available_width() - 24.0),
+                );
+            });
+            let want = self.expected.trim().to_lowercase();
+            if !want.is_empty() {
+                if want == md5.to_lowercase() {
+                    ui.colored_label(added_like_color(ui), "MATCH (MD5)");
+                } else if want == sha256.to_lowercase() {
+                    ui.colored_label(added_like_color(ui), "MATCH (SHA-256)");
+                } else {
+                    ui.colored_label(ui.visuals().error_fg_color, "MISMATCH");
+                }
+            }
         }
     }
 

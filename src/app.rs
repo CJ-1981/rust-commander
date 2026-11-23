@@ -1,14 +1,14 @@
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 
-use crate::jobs::{Job, JobKind, JobState};
+use crate::jobs::{await_decision, Job, JobKind, Outcome, JobState};
 use crate::ops;
-use crate::panel::{fmt_size, fmt_time, list_roots, FileEntry, FilePanel, Pane, SortKey};
+use crate::panel::{display_name, fmt_size, fmt_time, list_roots, FileEntry, FilePanel, Pane, SortKey};
 use crate::tools::{ToolTab, Toolbox};
 use crate::viewer::Viewer;
 
@@ -18,9 +18,15 @@ enum Modal {
     Move { target: String, count: usize },
     Mkdir { name: String },
     Rename { path: PathBuf, name: String },
-    Delete { count: usize, preview: Vec<String> },
+    Delete { count: usize, preview: Vec<String>, permanent: bool },
     /// Rename a folder tab of pane `pane_idx` (empty name = folder name).
     RenameTab { pane_idx: usize, tab_idx: usize, name: String },
+    /// Create an empty file in the active pane.
+    NewFile { name: String },
+    /// Pin a folder to the Favorites menu.
+    AddBookmark { path: PathBuf, name: String },
+    /// A transfer hit an existing target; ask what to do.
+    Overwrite { job_id: u64, path: String, is_dir: bool },
     /// Confirm discarding unsaved edits in the viewer.
     DiscardViewer,
 }
@@ -35,6 +41,7 @@ enum RowAction {
     CopyTo(PathBuf),
     Rename(PathBuf),
     Delete(PathBuf),
+    DeletePermanent(PathBuf),
 }
 
 /// Which sort header was clicked inside a table body render pass.
@@ -68,10 +75,13 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("F6", "Move selection to opposite panel"),
     ("Shift+F6", "Rename current entry"),
     ("F7", "New folder"),
-    ("F8 / Delete", "Delete selection (permanent)"),
+    ("F8 / Delete", "Move selection to Trash"),
     ("Ctrl+S", "Save file in the editor"),
     ("Ctrl+T", "New folder tab"),
     ("Ctrl+W", "Close folder tab"),
+    ("Ctrl+N", "New empty file"),
+    ("Ctrl+F", "Focus the folder filter"),
+    ("Alt+Left / Right", "Back / forward in folder history"),
     ("Esc", "Close dialog"),
 ];
 
@@ -81,6 +91,12 @@ pub struct CommanderApp {
     dark: bool,
     /// Width of the left pane (the divider position); `None` = half/half.
     pane_width: Option<f32>,
+    /// Recursive folder sizes, computed on demand (path -> (bytes, items)).
+    dir_sizes: std::collections::HashMap<String, (u64, u64)>,
+    /// Pinned folders shown in each pane's Favorites menu.
+    bookmarks: Vec<Bookmark>,
+    /// Focus the active pane's filter box on the next frame (Ctrl+F).
+    focus_filter: bool,
     jobs: Vec<Job>,
     modal: Option<Modal>,
     toolbox: Toolbox,
@@ -116,6 +132,9 @@ impl CommanderApp {
             active: 0,
             dark: prefs.dark,
             pane_width: prefs.pane_width,
+            dir_sizes: std::collections::HashMap::new(),
+            bookmarks: prefs.bookmarks,
+            focus_filter: false,
             jobs: Vec::new(),
             modal: None,
             toolbox: Toolbox::default(),
@@ -168,10 +187,11 @@ impl CommanderApp {
     }
 
     fn set_hidden(&mut self, show: bool) {
+        let sizes = self.dir_sizes.clone();
         for pane in &mut self.panes {
             for tab in &mut pane.tabs {
                 tab.show_hidden = show;
-                tab.apply_filter_sort();
+                tab.apply_filter_sort_with(&sizes);
             }
         }
     }
@@ -199,6 +219,21 @@ impl CommanderApp {
         } else {
             sel
         }
+    }
+
+    /// First selected plain file in a pane (or the cursor entry if it is a
+    /// file) — used to prefill the compare tool.
+    fn first_file_entry(&self, pane_idx: usize) -> Option<FileEntry> {
+        let p = self.panes[pane_idx].cur_ref();
+        for &vi in &p.visible {
+            let e = &p.entries[vi];
+            if !e.is_dir && p.selected.contains(&e.path) {
+                return Some(e.clone());
+            }
+        }
+        p.visible_entry(p.cursor)
+            .filter(|e| !e.is_dir)
+            .cloned()
     }
 
     /// Point the operation target at `path`: if the panel's selection already
@@ -338,6 +373,11 @@ impl CommanderApp {
     }
 
     fn open_delete_modal(&mut self) {
+        self.open_delete_modal_with(false);
+    }
+
+    /// Delete dialog; `permanent` skips the trash entirely.
+    fn open_delete_modal_with(&mut self, permanent: bool) {
         let items = self.op_items();
         if items.is_empty() {
             return;
@@ -346,6 +386,7 @@ impl CommanderApp {
         self.modal = Some(Modal::Delete {
             count: items.len(),
             preview,
+            permanent,
         });
     }
 
@@ -356,7 +397,23 @@ impl CommanderApp {
             Some(Modal::Move { target, .. }) => self.start_transfer(JobKind::Move, target),
             Some(Modal::Mkdir { name }) => self.do_mkdir(name),
             Some(Modal::Rename { path, name }) => self.do_rename(path, name),
-            Some(Modal::Delete { .. }) => self.start_delete(),
+            Some(Modal::Delete { permanent, .. }) => self.start_delete(permanent),
+            Some(Modal::NewFile { name }) => self.do_new_file(name),
+            // Overwrite prompts resolve directly in show_modal.
+            Some(Modal::Overwrite { .. }) => {}
+            Some(Modal::AddBookmark { path, name }) => {
+                let name = name.trim().to_string();
+                let name = if name.is_empty() {
+                    crate::panel::display_name(&path)
+                } else {
+                    name
+                };
+                self.bookmarks.push(Bookmark {
+                    name,
+                    path: path.display().to_string(),
+                });
+                self.toast("Added to Favorites", false);
+            }
             Some(Modal::RenameTab {
                 pane_idx,
                 tab_idx,
@@ -392,6 +449,8 @@ impl CommanderApp {
                 if let Ok(mut s) = state.lock() {
                     s.total = total;
                 }
+                let mut copied = 0u64;
+                let mut skipped = 0u64;
                 for (i, item) in items.iter().enumerate() {
                     if cancel.load(Ordering::Relaxed) {
                         if let Ok(mut s) = state.lock() {
@@ -402,22 +461,46 @@ impl CommanderApp {
                     if let Ok(mut s) = state.lock() {
                         s.current = names[i].clone();
                     }
-                    let r = if kind == JobKind::Copy {
-                        ops::copy_path(&item.path, &dst)
-                    } else {
-                        ops::move_path(&item.path, &dst)
-                    };
-                    if let Err(e) = r {
-                        if let Ok(mut s) = state.lock() {
-                            s.error = Some(format!("'{}': {}", names[i], e));
+                    // Existing target? Ask the user (the UI answers via the
+                    // shared state; "all" answers repeat automatically).
+                    let ask = |target: &Path, is_dir: bool| {
+                        {
+                            let mut s = state.lock().unwrap();
+                            s.conflict = Some(crate::jobs::ConflictInfo {
+                                path: target.display().to_string(),
+                                is_dir,
+                            });
                         }
-                        break;
+                        await_decision(state, cancel)
+                            .map(|d| match d {
+                                crate::jobs::Decision::Overwrite => ops::Overwrite::Yes,
+                                crate::jobs::Decision::Skip => ops::Overwrite::No,
+                            })
+                            .unwrap_or(ops::Overwrite::No) // cancelled = skip
+                    };
+                    let r = if kind == JobKind::Copy {
+                        ops::copy_path(&item.path, &dst, ask)
+                    } else {
+                        ops::move_path(&item.path, &dst, ask)
+                    };
+                    match r {
+                        Err(e) => {
+                            if let Ok(mut s) = state.lock() {
+                                s.error = Some(format!("'{}': {}", names[i], e));
+                            }
+                            break;
+                        }
+                        Ok(out) => match out {
+                            ops::TransferOutcome::Copied => copied += 1,
+                            ops::TransferOutcome::Skipped => skipped += 1,
+                        },
                     }
                     if let Ok(mut s) = state.lock() {
                         s.done = i as u64 + 1;
                     }
                 }
                 if let Ok(mut s) = state.lock() {
+                    s.current = format!("{} copied, {} skipped", copied, skipped);
                     s.finished = true;
                 }
             },
@@ -425,16 +508,17 @@ impl CommanderApp {
         self.jobs.push(job);
     }
 
-    fn start_delete(&mut self) {
+    fn start_delete(&mut self, permanent: bool) {
         let items = self.op_items();
         if items.is_empty() {
             return;
         }
         let total = items.len() as u64;
         let names: Vec<String> = items.iter().map(|e| e.name.clone()).collect();
+        let verb = if permanent { "Delete" } else { "Trash" };
         let job = Job::spawn(
             JobKind::Delete,
-            format!("Delete {} item(s)", items.len()),
+            format!("{} {} item(s)", verb, items.len()),
             move |state, cancel| {
                 if let Ok(mut s) = state.lock() {
                     s.total = total;
@@ -449,7 +533,12 @@ impl CommanderApp {
                     if let Ok(mut s) = state.lock() {
                         s.current = names[i].clone();
                     }
-                    if let Err(e) = ops::remove_path(&item.path) {
+                    let r = if permanent {
+                        ops::remove_path(&item.path)
+                    } else {
+                        ops::trash_path(&item.path)
+                    };
+                    if let Err(e) = r {
                         if let Ok(mut s) = state.lock() {
                             s.error = Some(format!("'{}': {}", names[i], e));
                         }
@@ -480,6 +569,23 @@ impl CommanderApp {
                 self.toast(format!("Created folder '{}'", name), false);
             }
             Err(e) => self.toast(format!("Create folder failed: {}", e), true),
+        }
+    }
+
+    /// Create an empty file; refuses to clobber an existing one.
+    fn do_new_file(&mut self, name: String) {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            self.toast("File name is empty", true);
+            return;
+        }
+        let path = self.panes[self.active].cur().path.join(&name);
+        match std::fs::File::create_new(&path) {
+            Ok(_) => {
+                self.reload_both();
+                self.toast(format!("Created file '{}'", name), false);
+            }
+            Err(e) => self.toast(format!("Create file failed: {}", e), true),
         }
     }
 
@@ -534,13 +640,109 @@ impl CommanderApp {
                     JobKind::Hash => self.toolbox.hash.on_done(snap),
                     JobKind::Search => self.toolbox.search.on_done(snap),
                     JobKind::Dup => self.toolbox.dup.on_done(snap),
+                    JobKind::Compare => self.toolbox.compare.on_done(snap),
+                    JobKind::Sizes => {
+                        if let Some(Outcome::Sizes { sizes }) = &snap.outcome {
+                            for s in sizes {
+                                self.dir_sizes.insert(s.path.clone(), (s.bytes, s.items));
+                            }
+                            let n = sizes.len();
+                            self.toast(format!("Sizes computed for {} folder(s)", n), false);
+                        }
+                    }
                 }
             }
             self.jobs.retain(|j| !j.snapshot().finished);
         }
+        // A transfer hit an existing target: surface the overwrite prompt
+        // (one at a time; Esc answers Skip).
+        if self.modal.is_none() {
+            let pending = self.jobs.iter().find_map(|j| {
+                j.snapshot()
+                    .conflict
+                    .map(|c| (j.id, c))
+            });
+            if let Some((job_id, c)) = pending {
+                self.modal = Some(Modal::Overwrite {
+                    job_id,
+                    path: c.path,
+                    is_dir: c.is_dir,
+                });
+                ctx.request_repaint();
+            }
+        }
         if any_running {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
+    }
+
+    /// Compute recursive sizes for the given folders in the background;
+    /// results land in `self.dir_sizes` and also cover all subfolders.
+    fn start_sizes_job(&mut self, dirs: Vec<PathBuf>) {
+        let pending: Vec<String> = dirs
+            .into_iter()
+            .filter(|d| !self.dir_sizes.contains_key(&d.display().to_string()))
+            .map(|d| d.display().to_string())
+            .collect();
+        if pending.is_empty() {
+            self.toast("Folder sizes are already known", false);
+            return;
+        }
+        let job = Job::spawn(
+            JobKind::Sizes,
+            format!("Sizes of {} folder(s)", pending.len()),
+            move |state, cancel| {
+                if let Ok(mut s) = state.lock() {
+                    s.total = pending.len() as u64;
+                }
+                let mut out: Vec<crate::jobs::DirSize> = Vec::new();
+                for (i, dir) in pending.iter().enumerate() {
+                    if cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    if let Ok(mut s) = state.lock() {
+                        s.current = format!("scanning {}", dir);
+                        s.done = i as u64;
+                    }
+                    // Iterative walk; sizes of every subfolder are reported too.
+                    let mut stack = vec![PathBuf::from(dir)];
+                    let (mut bytes, mut items) = (0u64, 0u64);
+                    while let Some(d) = stack.pop() {
+                        if cancel.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let rd = match std::fs::read_dir(&d) {
+                            Ok(rd) => rd,
+                            Err(_) => continue,
+                        };
+                        for e in rd.flatten() {
+                            items += 1;
+                            match e.file_type() {
+                                Ok(ft) if ft.is_dir() && !ft.is_symlink() => {
+                                    stack.push(e.path());
+                                }
+                                Ok(ft) if ft.is_file() => {
+                                    if let Ok(meta) = e.metadata() {
+                                        bytes += meta.len();
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    out.push(crate::jobs::DirSize {
+                        path: dir.clone(),
+                        bytes,
+                        items,
+                    });
+                }
+                let mut s = state.lock().unwrap();
+                s.done = out.len() as u64;
+                s.finished = true;
+                s.outcome = Some(Outcome::Sizes { sizes: out });
+            },
+        );
+        self.jobs.push(job);
     }
 
     // ------------------------------------------------------------------ keys
@@ -603,6 +805,28 @@ impl CommanderApp {
                 self.panes[self.active].close_tab(self.panes[self.active].active);
             }
 
+            // Back/forward through folder history.
+            let (alt, key_left, key_right) = ctx.input(|i| {
+                (
+                    i.modifiers.alt,
+                    i.key_pressed(egui::Key::ArrowLeft),
+                    i.key_pressed(egui::Key::ArrowRight),
+                )
+            });
+            if alt && key_left && !self.panes[self.active].cur().go_back() {
+                self.toast("No earlier folder in history", true);
+            }
+            if alt && key_right && !self.panes[self.active].cur().go_forward() {
+                self.toast("Nothing to go forward to", true);
+            }
+
+            if ctrl && ctx.input(|i| i.key_pressed(egui::Key::N)) {
+                self.modal = Some(Modal::NewFile { name: String::new() });
+            }
+            if ctrl && ctx.input(|i| i.key_pressed(egui::Key::F)) {
+                self.focus_filter = true;
+            }
+
             let (tab, up, down, enter, back, ins, space, del, home, end) = ctx.input(|i| (
                 i.key_pressed(egui::Key::Tab),
                 i.key_pressed(egui::Key::ArrowUp),
@@ -659,6 +883,9 @@ impl CommanderApp {
                     if ui.button("New folder  (F7)").clicked() {
                         self.modal = Some(Modal::Mkdir { name: String::new() });
                     }
+                    if ui.button("New file  (Ctrl+N)").clicked() {
+                        self.modal = Some(Modal::NewFile { name: String::new() });
+                    }
                     if ui.button("Rename  (Shift+F6)").clicked() {
                         self.open_rename_modal();
                     }
@@ -701,6 +928,18 @@ impl CommanderApp {
                         self.toolbox.rename.files =
                             items.iter().map(|e| e.path.clone()).collect();
                         self.toolbox.rename.last_result = None;
+                    }
+                    if ui.button("Compare files").clicked() {
+                        self.toolbox.show = true;
+                        self.toolbox.tab = ToolTab::Compare;
+                        self.toolbox.compare.left = self
+                            .first_file_entry(0)
+                            .map(|e| e.path.display().to_string())
+                            .unwrap_or_default();
+                        self.toolbox.compare.right = self
+                            .first_file_entry(1)
+                            .map(|e| e.path.display().to_string())
+                            .unwrap_or_default();
                     }
                     if ui.button("System info").clicked() {
                         self.toolbox.show = true;
@@ -789,7 +1028,7 @@ impl CommanderApp {
                     ui,
                     ICON_DELETE,
                     can_op,
-                    "Delete selection permanently (F8)",
+                    "Move selection to Trash (F8)",
                 ) {
                     self.open_delete_modal();
                 }
@@ -954,6 +1193,9 @@ impl CommanderApp {
         // Tab actions deferred out of the frame closure (rename needs
         // `self.modal`).
         let tab_rename = RefCell::new(None::<usize>);
+        let term_dir = RefCell::new(None::<PathBuf>);
+        let add_bm = Cell::new(false);
+        let sizes_dirs = RefCell::new(None::<Vec<PathBuf>>);
 
         egui::Frame::default()
             .stroke(stroke)
@@ -1040,6 +1282,20 @@ impl CommanderApp {
 
                 // Panel toolbar.
                 ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(!p.back.is_empty(), egui::Button::new("←"))
+                        .on_hover_text("Back (Alt+←)")
+                        .clicked()
+                    {
+                        p.go_back();
+                    }
+                    if ui
+                        .add_enabled(!p.fwd.is_empty(), egui::Button::new("→"))
+                        .on_hover_text("Forward (Alt+→)")
+                        .clicked()
+                    {
+                        p.go_forward();
+                    }
                     if ui.button("Up").clicked() {
                         if let Some(par) = p.path.parent().map(|x| x.to_path_buf()) {
                             p.set_path(par);
@@ -1058,10 +1314,73 @@ impl CommanderApp {
                     if ui.button("Refresh").clicked() {
                         p.reload();
                     }
+                    if ui
+                        .small_button(">_")
+                        .on_hover_text("Open a terminal in this folder")
+                        .clicked()
+                    {
+                        term_dir.replace(Some(p.path.clone()));
+                    }
+                    ui.menu_button("★", |ui| {
+                        let bookmarks = self.bookmarks.clone();
+                        for (i, bm) in bookmarks.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .small_button(bm.name.as_str())
+                                    .on_hover_text(&bm.path)
+                                    .clicked()
+                                {
+                                    p.set_path(PathBuf::from(&bm.path));
+                                }
+                                if ui.small_button("✕").on_hover_text("Remove").clicked() {
+                                    self.bookmarks.remove(i);
+                                }
+                            });
+                        }
+                        if !self.bookmarks.is_empty() {
+                            ui.separator();
+                        }
+                        if ui.button("Add current folder…").clicked() {
+                            add_bm.set(true);
+                        }
+                    });
+                    if ui
+                        .small_button("Sizes")
+                        .on_hover_text("Compute recursive sizes of the listed folders")
+                        .clicked()
+                    {
+                        let dirs: Vec<PathBuf> = p
+                            .visible
+                            .iter()
+                            .map(|&vi| p.entries[vi].path.clone())
+                            .filter(|path| path.is_dir())
+                            .collect();
+                        sizes_dirs.replace(Some(dirs));
+                    }
+                    let want_filter_focus = self.focus_filter;
+                    if want_filter_focus {
+                        self.focus_filter = false;
+                    }
+                    let fresp = ui.add(
+                        egui::TextEdit::singleline(&mut p.filter)
+                            .hint_text("Filter")
+                            .desired_width(110.0)
+                            .id_salt(format!("filter_{}", idx)),
+                    );
+                    if want_filter_focus && idx == self.active {
+                        fresp.request_focus();
+                    }
+                    if fresp.changed() {
+                        p.apply_filter_sort_with(&self.dir_sizes);
+                    }
+                    if fresp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        p.filter.clear();
+                        p.apply_filter_sort_with(&self.dir_sizes);
+                    }
                     let mut hid = p.show_hidden;
                     if ui.checkbox(&mut hid, "Hidden").changed() {
                         p.show_hidden = hid;
-                        p.apply_filter_sort();
+                        p.apply_filter_sort_with(&self.dir_sizes);
                     }
                 });
 
@@ -1237,8 +1556,18 @@ impl CommanderApp {
                                             row_action.borrow_mut().replace(RowAction::Rename(path.clone()));
                                             ui.close_menu();
                                         }
-                                        if ui.button("Delete…").clicked() {
+                                        if is_dir
+                                            && ui.button("Calculate folder size").clicked()
+                                        {
+                                            sizes_dirs.replace(Some(vec![path.clone()]));
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("Move to Trash…").clicked() {
                                             row_action.borrow_mut().replace(RowAction::Delete(path.clone()));
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("Delete permanently…").clicked() {
+                                            row_action.borrow_mut().replace(RowAction::DeletePermanent(path.clone()));
                                             ui.close_menu();
                                         }
                                         ui.separator();
@@ -1253,9 +1582,22 @@ impl CommanderApp {
                                     });
                                 });
                                 row.col(|ui| {
+                                    let size_txt = if is_dir {
+                                        match self
+                                            .dir_sizes
+                                            .get(&path.display().to_string())
+                                        {
+                                            Some((bytes, items)) => {
+                                                format!("{} · {} items", fmt_size(*bytes), items)
+                                            }
+                                            None => "—".to_string(),
+                                        }
+                                    } else {
+                                        fmt_size(size)
+                                    };
                                     let r = ui
                                         .horizontal(|ui| {
-                                            let r = ui.selectable_label(is_sel, fmt_size(size));
+                                            let r = ui.selectable_label(is_sel, size_txt);
                                             let (_, catcher) = ui.allocate_exact_size(
                                                 egui::vec2(
                                                     ui.available_width(),
@@ -1336,7 +1678,7 @@ impl CommanderApp {
                         p.sort = sc.key;
                         p.ascending = true;
                     }
-                    p.apply_filter_sort();
+                    p.apply_filter_sort_with(&self.dir_sizes);
                 }
                 if let Some(path) = nav.borrow_mut().take() {
                     p.set_path(path);
@@ -1373,6 +1715,27 @@ impl CommanderApp {
 
         // Apply deferred actions collected while drawing (they need `self`,
         // which was borrowed by the frame closures above).
+        if let Some(dir) = term_dir.borrow_mut().take() {
+            match ops::open_terminal(&dir) {
+                Ok(()) => self.toast("Opening terminal", false),
+                Err(e) => self.toast(format!("Could not open terminal: {}", e), true),
+            }
+        }
+        if let Some(dirs) = sizes_dirs.borrow_mut().take() {
+            self.start_sizes_job(dirs);
+            // Sorting by Size can now use the new numbers.
+            if self.panes[idx].cur_ref().sort == SortKey::Size {
+                let sizes = self.dir_sizes.clone();
+                self.panes[idx].cur().apply_filter_sort_with(&sizes);
+            }
+        }
+        if add_bm.get() {
+            let path = self.panes[idx].cur().path.clone();
+            self.modal = Some(Modal::AddBookmark {
+                path: path.clone(),
+                name: display_name(&path),
+            });
+        }
         if let Some(ti) = tab_rename.borrow_mut().take() {
             let name = self.panes[idx].tab_label(ti);
             self.modal = Some(Modal::RenameTab {
@@ -1416,7 +1779,12 @@ impl CommanderApp {
                 RowAction::Delete(path) => {
                     self.active = idx;
                     self.focus_op_selection(idx, &path);
-                    self.open_delete_modal();
+                    self.open_delete_modal_with(false);
+                }
+                RowAction::DeletePermanent(path) => {
+                    self.active = idx;
+                    self.focus_op_selection(idx, &path);
+                    self.open_delete_modal_with(true);
                 }
             }
         }
@@ -1427,6 +1795,11 @@ impl CommanderApp {
             return;
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if let Some(Modal::Overwrite { job_id, .. }) = &self.modal {
+                if let Some(j) = self.jobs.iter().find(|j| j.id == *job_id) {
+                    j.resolve(crate::jobs::Decision::Skip, false);
+                }
+            }
             self.modal = None;
             return;
         }
@@ -1565,23 +1938,168 @@ impl CommanderApp {
                         closed = true;
                     }
                 }
-                Modal::Delete { count, preview } => {
+                Modal::NewFile { name } => {
                     let mut open = true;
-                    egui::Window::new("Confirm delete")
+                    egui::Window::new("New file")
                         .open(&mut open)
                         .collapsible(false)
                         .show(ctx, |ui| {
-                            ui.colored_label(
-                                ui.visuals().warn_fg_color,
-                                format!("Permanently delete {} item(s)?", count),
-                            );
+                            ui.label("File name:");
+                            let resp =
+                                ui.add(egui::TextEdit::singleline(name).desired_width(320.0));
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Create").clicked()
+                                    || (resp.lost_focus()
+                                        && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                                {
+                                    confirmed = true;
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    closed = true;
+                                }
+                            });
+                        });
+                    if !open {
+                        closed = true;
+                    }
+                }
+                Modal::AddBookmark { path, name } => {
+                    let mut open = true;
+                    egui::Window::new("Add favorite")
+                        .open(&mut open)
+                        .collapsible(false)
+                        .show(ctx, |ui| {
+                            ui.label(format!("Folder: {}", path.display()));
+                            ui.label("Name:");
+                            let resp =
+                                ui.add(egui::TextEdit::singleline(name).desired_width(320.0));
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Add").clicked()
+                                    || (resp.lost_focus()
+                                        && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                                {
+                                    confirmed = true;
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    closed = true;
+                                }
+                            });
+                        });
+                    if !open {
+                        closed = true;
+                    }
+                }
+                Modal::Overwrite {
+                    job_id,
+                    path,
+                    is_dir,
+                } => {
+                    let mut open = true;
+                    let what = if *is_dir { "folder" } else { "file" };
+                    egui::Window::new("Target already exists")
+                        .open(&mut open)
+                        .collapsible(false)
+                        .show(ctx, |ui| {
+                            ui.label(format!(
+                                "A {} with this name already exists at the target:",
+                                what
+                            ));
+                            ui.monospace(path);
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Overwrite").clicked() {
+                                    if let Some(j) =
+                                        self.jobs.iter().find(|j| j.id == *job_id)
+                                    {
+                                        j.resolve(crate::jobs::Decision::Overwrite, false);
+                                    }
+                                    closed = true;
+                                }
+                                if ui.button("Skip").clicked() {
+                                    if let Some(j) =
+                                        self.jobs.iter().find(|j| j.id == *job_id)
+                                    {
+                                        j.resolve(crate::jobs::Decision::Skip, false);
+                                    }
+                                    closed = true;
+                                }
+                            });
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Overwrite all").clicked() {
+                                    if let Some(j) =
+                                        self.jobs.iter().find(|j| j.id == *job_id)
+                                    {
+                                        j.resolve(crate::jobs::Decision::Overwrite, true);
+                                    }
+                                    closed = true;
+                                }
+                                if ui.button("Skip all").clicked() {
+                                    if let Some(j) =
+                                        self.jobs.iter().find(|j| j.id == *job_id)
+                                    {
+                                        j.resolve(crate::jobs::Decision::Skip, true);
+                                    }
+                                    closed = true;
+                                }
+                                if ui.button("Cancel job").clicked() {
+                                    if let Some(j) =
+                                        self.jobs.iter().find(|j| j.id == *job_id)
+                                    {
+                                        j.cancel();
+                                        j.resolve(crate::jobs::Decision::Skip, true);
+                                    }
+                                    closed = true;
+                                }
+                            });
+                        });
+                    if !open {
+                        closed = true;
+                    }
+                }
+                Modal::Delete {
+                    count,
+                    preview,
+                    permanent,
+                } => {
+                    let mut open = true;
+                    let title = if *permanent {
+                        "Delete permanently"
+                    } else {
+                        "Move to Trash"
+                    };
+                    let warning = if *permanent {
+                        format!(
+                            "Permanently delete {} item(s)? This cannot be undone.",
+                            count
+                        )
+                    } else {
+                        format!("Move {} item(s) to the Trash?", count)
+                    };
+                    egui::Window::new(title)
+                        .open(&mut open)
+                        .collapsible(false)
+                        .show(ctx, |ui| {
+                            ui.colored_label(ui.visuals().warn_fg_color, warning);
                             for name in preview {
                                 ui.label(egui::RichText::new(format!("  {}", name)).small());
                             }
                             ui.add_space(6.0);
                             ui.horizontal(|ui| {
-                                if ui.button("Delete").clicked() {
-                                    confirmed = true;
+                                if *permanent {
+                                    if ui.button("Delete permanently").clicked() {
+                                        confirmed = true;
+                                    }
+                                } else {
+                                    if ui.button("Move to Trash").clicked() {
+                                        confirmed = true;
+                                    }
+                                    if ui.button("Delete permanently…").clicked() {
+                                        *permanent = true;
+                                        confirmed = true;
+                                    }
                                 }
                                 if ui.button("Cancel").clicked() {
                                     closed = true;
@@ -1763,6 +2281,7 @@ impl eframe::App for CommanderApp {
                 dark: self.dark,
                 show_hidden: self.panes[0].cur_ref().show_hidden,
                 pane_width: self.pane_width,
+                bookmarks: self.bookmarks.clone(),
                 tabs: self
                     .panes
                     .iter()
@@ -1874,6 +2393,13 @@ struct PersistTab {
     name: Option<String>,
 }
 
+/// A pinned folder shown in the Favorites menu.
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct Bookmark {
+    name: String,
+    path: String,
+}
+
 /// Persisted preferences, loaded at startup and written on shutdown.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -1883,6 +2409,7 @@ struct Prefs {
     pane_width: Option<f32>,
     /// Folder tabs per pane (paths + names); entries reload on startup.
     tabs: Vec<Vec<PersistTab>>,
+    bookmarks: Vec<Bookmark>,
 }
 
 impl Default for Prefs {
@@ -1892,6 +2419,7 @@ impl Default for Prefs {
             show_hidden: false,
             pane_width: None,
             tabs: Vec::new(),
+            bookmarks: Vec::new(),
         }
     }
 }

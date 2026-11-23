@@ -1,3 +1,4 @@
+pub mod compare;
 pub mod dup;
 pub mod hash;
 pub mod rename;
@@ -7,6 +8,7 @@ pub mod sysinfo;
 use eframe::egui;
 
 use crate::jobs::Job;
+use compare::CompareTool;
 use dup::DupTool;
 use hash::HashTool;
 use rename::RenameTool;
@@ -20,6 +22,7 @@ pub enum ToolTab {
     Search,
     Duplicates,
     Rename,
+    Compare,
     System,
 }
 
@@ -32,6 +35,7 @@ pub struct Toolbox {
     pub search: SearchTool,
     pub dup: DupTool,
     pub rename: RenameTool,
+    pub compare: CompareTool,
     pub sys: SysTool,
 }
 
@@ -46,6 +50,7 @@ impl Toolbox {
                 (ToolTab::Search, "File search"),
                 (ToolTab::Duplicates, "Duplicate finder"),
                 (ToolTab::Rename, "Multi rename"),
+                (ToolTab::Compare, "Compare files"),
                 (ToolTab::System, "System info"),
             ];
             for (t, label) in tabs {
@@ -61,6 +66,7 @@ impl Toolbox {
                 ToolTab::Search => self.search.ui(ui, jobs, nav),
                 ToolTab::Duplicates => self.dup.ui(ui, jobs, nav),
                 ToolTab::Rename => self.rename.ui(ui, changed),
+                ToolTab::Compare => self.compare.ui(ui, jobs),
                 ToolTab::System => self.sys.ui(ui),
             }
         });

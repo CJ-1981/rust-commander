@@ -17,6 +17,9 @@ A **Total Commander-style dual-pane file manager** with a built-in **utility too
 - Sort by name, size, modification date or extension - click the column headers
 - Editable path bar, Home button, drive/volume picker (Windows drive letters, macOS `/Volumes`), refresh, hidden-file toggle
 - Per-pane **folder tabs**: `+` opens a tab at the current folder, `Ctrl+T`/`Ctrl+W` add/close, double-click or right-click a tab to rename it; tabs survive restarts
+- **Safer file operations**: deletes go to the Trash (permanent option available), and copying/moving onto existing files asks — Overwrite, Skip, or remember the choice for the rest of the batch
+- **Navigation**: per-tab back/forward history (`Alt+←`/`Alt+→`), Favorites menu for pinned folders, live name filter (`Ctrl+F`)
+- **Power tools**: recursive folder sizes with item counts, open-a-terminal-here button, checksum verification in the hash tool, and a two-file text comparison with a colored unified diff
 - Built-in text viewer (F3) and editor (F4) with save (Ctrl+S)
 - Open any file with its system default application (double-click or menu)
 - Active panel is operated with Total Commander-style keyboard shortcuts

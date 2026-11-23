@@ -20,6 +20,28 @@ pub struct DupGroup {
     pub files: Vec<PathBuf>,
 }
 
+/// One computed folder: recursive size and contained entry count.
+#[derive(Clone, Debug)]
+pub struct DirSize {
+    pub path: String,
+    pub bytes: u64,
+    pub items: u64,
+}
+
+/// One line of a text comparison (same content, or unique to one side).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiffKind {
+    Same,
+    Removed,
+    Added,
+}
+
+#[derive(Clone, Debug)]
+pub struct DiffRow {
+    pub kind: DiffKind,
+    pub text: String,
+}
+
 /// Result payload delivered by a finished background job.
 #[derive(Clone, Debug)]
 pub enum Outcome {
@@ -38,6 +60,30 @@ pub enum Outcome {
         scanned: u64,
         truncated: bool,
     },
+    Sizes {
+        sizes: Vec<DirSize>,
+    },
+    Compare {
+        rows: Vec<DiffRow>,
+        added: usize,
+        removed: usize,
+        same: usize,
+        truncated: bool,
+    },
+}
+
+/// A transfer hit an existing target and asked the user what to do.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConflictInfo {
+    pub path: String,
+    pub is_dir: bool,
+}
+
+/// Decision for a conflicting target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Decision {
+    Overwrite,
+    Skip,
 }
 
 /// Live state of a background job, shared with the worker thread.
@@ -49,6 +95,36 @@ pub struct JobState {
     pub finished: bool,
     pub error: Option<String>,
     pub outcome: Option<Outcome>,
+    /// Set while a transfer waits for an overwrite decision.
+    pub conflict: Option<ConflictInfo>,
+    /// Answer for the pending conflict (written by the UI thread).
+    pub decision: Option<Decision>,
+    /// Answer applied automatically to all future conflicts of this job.
+    pub auto_decision: Option<Decision>,
+}
+
+/// Block the worker until the UI answers the pending conflict (or the job
+/// is cancelled). Returns the decision, or `None` when cancelled.
+pub fn await_decision(
+    state: &Arc<Mutex<JobState>>,
+    cancel: &Arc<AtomicBool>,
+) -> Option<Decision> {
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        if let Ok(mut s) = state.lock() {
+            if let Some(d) = s.auto_decision {
+                s.conflict = None;
+                return Some(d);
+            }
+            if let Some(d) = s.decision.take() {
+                s.conflict = None;
+                return Some(d);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 /// What kind of work a job performs (drives result routing and panel reloads).
@@ -60,10 +136,13 @@ pub enum JobKind {
     Hash,
     Search,
     Dup,
+    Sizes,
+    Compare,
 }
 
 /// A background job running on a worker thread with progress and cancellation.
 pub struct Job {
+    pub id: u64,
     pub kind: JobKind,
     pub label: String,
     state: Arc<Mutex<JobState>>,
@@ -71,6 +150,9 @@ pub struct Job {
     #[allow(dead_code)]
     handle: Option<JoinHandle<()>>,
 }
+
+/// Sequence number for `Job::id`.
+static NEXT_JOB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl Job {
     /// Spawn a job. `f` receives the shared state and a cancellation flag and
@@ -85,6 +167,7 @@ impl Job {
         let cx = cancel.clone();
         let handle = std::thread::spawn(move || f(&st, &cx));
         Self {
+            id: NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed),
             kind,
             label,
             state,
@@ -99,6 +182,17 @@ impl Job {
 
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    /// Answer a pending overwrite conflict and optionally fix the answer for
+    /// all remaining conflicts of this job.
+    pub fn resolve(&self, decision: Decision, all: bool) {
+        if let Ok(mut s) = self.state.lock() {
+            s.decision = Some(decision);
+            if all {
+                s.auto_decision = Some(decision);
+            }
+        }
     }
 }
 

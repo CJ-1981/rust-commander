@@ -58,6 +58,12 @@ pub struct FilePanel {
     /// by the table pass. Never set by mouse scrolling, so wheel scrolling is
     /// not fought by the auto-scroll.
     pub scroll_needed: bool,
+    /// Previously visited folders of this tab (most recent last).
+    pub back: Vec<PathBuf>,
+    /// Folders revisited after going back (most recent last).
+    pub fwd: Vec<PathBuf>,
+    /// Case-insensitive name filter narrowing the listing.
+    pub filter: String,
 }
 
 impl FilePanel {
@@ -76,6 +82,9 @@ impl FilePanel {
             drag_from: None,
             name: None,
             scroll_needed: false,
+            back: Vec::new(),
+            fwd: Vec::new(),
+            filter: String::new(),
         };
         p.set_path(start);
         p
@@ -83,17 +92,51 @@ impl FilePanel {
 
     /// Navigate to a directory and (re)load its contents.
     pub fn set_path(&mut self, path: PathBuf) {
+        self.navigate(path, true);
+    }
+
+    /// Navigate, optionally recording the move in the back history
+    /// (traversal via back/forward must not push new entries).
+    fn navigate(&mut self, path: PathBuf, record: bool) {
         let path = if path.exists() {
             fs::canonicalize(&path).unwrap_or(path)
         } else {
             path
         };
+        if record && self.path != path {
+            self.back.push(self.path.clone());
+            self.fwd.clear();
+        }
         self.path = path;
         self.path_edit = self.path.display().to_string();
         self.cursor = 0;
         self.selected.clear();
         self.drag_from = None;
         self.reload();
+    }
+
+    /// Go to the previously visited folder; returns true on success.
+    pub fn go_back(&mut self) -> bool {
+        if let Some(prev) = self.back.pop() {
+            let cur = self.path.clone();
+            self.navigate(prev, false);
+            self.fwd.push(cur);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Go to the folder visited before the last "back"; returns true on success.
+    pub fn go_forward(&mut self) -> bool {
+        if let Some(next) = self.fwd.pop() {
+            let cur = self.path.clone();
+            self.navigate(next, false);
+            self.back.push(cur);
+            true
+        } else {
+            false
+        }
     }
 
     /// Re-read the current directory, keeping the selection set.
@@ -130,8 +173,21 @@ impl FilePanel {
 
     /// Re-apply hidden-file filtering and sorting to the visible list.
     pub fn apply_filter_sort(&mut self) {
+        self.apply_filter_sort_with(&std::collections::HashMap::new());
+    }
+
+    /// Same as `apply_filter_sort`, but sorts folders by their cached
+    /// recursive size (path -> (bytes, items), from the folder-size tool).
+    pub fn apply_filter_sort_with(
+        &mut self,
+        dir_sizes: &std::collections::HashMap<String, (u64, u64)>,
+    ) {
+        let needle = self.filter.to_lowercase();
         let mut idx: Vec<usize> = (0..self.entries.len())
             .filter(|&i| self.show_hidden || !is_hidden_name(&self.entries[i].name))
+            .filter(|&i| {
+                needle.is_empty() || self.entries[i].name.to_lowercase().contains(&needle)
+            })
             .collect();
         idx.sort_by(|&a, &b| {
             let (a, b) = (&self.entries[a], &self.entries[b]);
@@ -148,7 +204,25 @@ impl FilePanel {
                     .ext_lower()
                     .cmp(&b.ext_lower())
                     .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
-                SortKey::Size => a.size.cmp(&b.size),
+                SortKey::Size => {
+                    let sa = if a.is_dir {
+                        dir_sizes
+                            .get(&a.path.display().to_string())
+                            .map(|s| s.0)
+                            .unwrap_or(0)
+                    } else {
+                        a.size
+                    };
+                    let sb = if b.is_dir {
+                        dir_sizes
+                            .get(&b.path.display().to_string())
+                            .map(|s| s.0)
+                            .unwrap_or(0)
+                    } else {
+                        b.size
+                    };
+                    sa.cmp(&sb)
+                }
                 SortKey::Modified => a.modified.cmp(&b.modified),
             };
             if self.ascending {
