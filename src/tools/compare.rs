@@ -35,31 +35,34 @@ impl CompareTool {
         ui.label("Compare two text files line by line.");
         ui.add_space(4.0);
 
-        egui::Grid::new("compare_inputs").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
+        // Horizontal rows (not a Grid): TextEdit widths inside Grid cells get
+        // clamped to the cell's sizing-pass width and collapse. The fields
+        // here stretch with the toolbox window instead.
+        ui.horizontal(|ui| {
             ui.label("Left file:");
             ui.add(
                 egui::TextEdit::singleline(&mut self.left)
                     .hint_text("Path to file...")
-                    .desired_width(380.0),
+                    .desired_width((ui.available_width() - 210.0).max(200.0)),
             );
             if ui.button("Browse...").clicked() {
                 if let Some(f) = rfd::FileDialog::new().pick_file() {
                     self.left = f.display().to_string();
                 }
             }
-            ui.end_row();
+        });
+        ui.horizontal(|ui| {
             ui.label("Right file:");
             ui.add(
                 egui::TextEdit::singleline(&mut self.right)
                     .hint_text("Path to file...")
-                    .desired_width(380.0),
+                    .desired_width((ui.available_width() - 210.0).max(200.0)),
             );
             if ui.button("Browse...").clicked() {
                 if let Some(f) = rfd::FileDialog::new().pick_file() {
                     self.right = f.display().to_string();
                 }
             }
-            ui.end_row();
         });
         ui.add_space(6.0);
 
