@@ -49,7 +49,7 @@ impl CompareTool {
             );
             if ui.button("Browse...").clicked() {
                 if let Some(f) = rfd::FileDialog::new().pick_file() {
-                    self.left = f.display().to_string();
+                    self.left = crate::panel::nfc(&f.display().to_string());
                 }
             }
         });
@@ -62,7 +62,7 @@ impl CompareTool {
             );
             if ui.button("Browse...").clicked() {
                 if let Some(f) = rfd::FileDialog::new().pick_file() {
-                    self.right = f.display().to_string();
+                    self.right = crate::panel::nfc(&f.display().to_string());
                 }
             }
         });
@@ -182,8 +182,14 @@ impl CompareTool {
     }
 
     fn start(&mut self, jobs: &mut Vec<Job>) {
-        let left = self.left.trim().to_string();
-        let right = self.right.trim().to_string();
+        // Resolve to an existing path first: the field text may use the other
+        // normalization form than the on-disk name (macOS NFD filenames).
+        let left = crate::panel::resolve_typed_path(self.left.trim())
+            .display()
+            .to_string();
+        let right = crate::panel::resolve_typed_path(self.right.trim())
+            .display()
+            .to_string();
         self.error = None;
         self.result = None;
         self.running = true;
@@ -457,8 +463,8 @@ fn text(s: Option<&String>) -> String {
 fn file_name_of(path: &str) -> String {
     Path::new(path)
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string())
+        .map(|n| crate::panel::nfc(&n.to_string_lossy()))
+        .unwrap_or_else(|| crate::panel::nfc(path))
 }
 
 #[cfg(test)]

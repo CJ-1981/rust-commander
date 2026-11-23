@@ -40,7 +40,7 @@ impl Viewer {
             path: path.to_path_buf(),
             name: path
                 .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
+                .map(|n| crate::panel::nfc(&n.to_string_lossy()))
                 .unwrap_or_default(),
             text,
             editing,

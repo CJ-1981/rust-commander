@@ -1,6 +1,6 @@
 [package]
 name = "rust-commander"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 description = "Total Commander-style dual-pane file manager with a utility toolbox, written in pure Rust. Works on Windows and macOS."
 license = "MIT"
@@ -22,6 +22,7 @@ chrono = "0.4"
 sysinfo = "0.31"
 trash = "5"
 similar = "2"
+unicode-normalization = "0.1"
 
 [profile.release]
 opt-level = 3

@@ -38,7 +38,7 @@ impl DupTool {
             );
             if ui.button("Browse...").clicked() {
                 if let Some(d) = rfd::FileDialog::new().pick_folder() {
-                    self.root = d.display().to_string();
+                    self.root = crate::panel::nfc(&d.display().to_string());
                 }
             }
         });
@@ -97,7 +97,7 @@ impl DupTool {
                         for f in &g.files {
                             let r = ui.selectable_label(
                                 false,
-                                egui::RichText::new(f.display().to_string())
+                                egui::RichText::new(crate::panel::nfc(&f.display().to_string()))
                                     .small()
                                     .weak(),
                             );
@@ -134,7 +134,7 @@ impl DupTool {
     }
 
     fn start(&mut self, jobs: &mut Vec<Job>) {
-        let root = PathBuf::from(self.root.trim());
+        let root = crate::panel::resolve_typed_path(self.root.trim());
         if !root.is_dir() {
             self.error = Some("Start folder does not exist".to_string());
             return;

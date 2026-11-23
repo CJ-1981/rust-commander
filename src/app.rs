@@ -368,7 +368,7 @@ impl CommanderApp {
         if items.is_empty() {
             return;
         }
-        let target = self.panes[1 - self.active].cur().path.display().to_string();
+        let target = crate::panel::nfc(&self.panes[1 - self.active].cur().path.display().to_string());
         self.modal = Some(Modal::Copy {
             target,
             count: items.len(),
@@ -380,7 +380,7 @@ impl CommanderApp {
         if items.is_empty() {
             return;
         }
-        let target = self.panes[1 - self.active].cur().path.display().to_string();
+        let target = crate::panel::nfc(&self.panes[1 - self.active].cur().path.display().to_string());
         self.modal = Some(Modal::Move {
             target,
             count: items.len(),
@@ -968,11 +968,11 @@ impl CommanderApp {
                         self.toolbox.tab = ToolTab::Compare;
                         self.toolbox.compare.left = self
                             .first_file_entry(0)
-                            .map(|e| e.path.display().to_string())
+                            .map(|e| crate::panel::nfc(&e.path.display().to_string()))
                             .unwrap_or_default();
                         self.toolbox.compare.right = self
                             .first_file_entry(1)
-                            .map(|e| e.path.display().to_string())
+                            .map(|e| crate::panel::nfc(&e.path.display().to_string()))
                             .unwrap_or_default();
                     }
                     if ui.button("System info").clicked() {
@@ -1257,7 +1257,9 @@ impl CommanderApp {
                         let r = ui.selectable_label(ti == pane.active, label.as_str())
                             .on_hover_text(match pane.tabs[ti].name.clone() {
                                 Some(custom) => format!("{} ({})", label, custom),
-                                None => pane.tabs[ti].path.display().to_string(),
+                                None => {
+                                    crate::panel::nfc(&pane.tabs[ti].path.display().to_string())
+                                }
                             });
                         if r.clicked() {
                             pane.active = ti;
@@ -1312,11 +1314,11 @@ impl CommanderApp {
                     let go = ui.button("Go").clicked()
                         || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                     if go {
-                        let np = PathBuf::from(p.path_edit.trim());
+                        let np = crate::panel::resolve_typed_path(p.path_edit.trim());
                         if np.is_dir() {
                             p.set_path(np);
                         } else {
-                            p.path_edit = p.path.display().to_string();
+                            p.path_edit = crate::panel::nfc(&p.path.display().to_string());
                             go_failed.set(true);
                         }
                     }
@@ -1348,7 +1350,7 @@ impl CommanderApp {
                     }
                     ui.menu_button("Drives", |ui| {
                         for root in list_roots() {
-                            if ui.button(root.display().to_string()).clicked() {
+                            if ui.button(crate::panel::nfc(&root.display().to_string())).clicked() {
                                 ui.close_menu();
                                 p.set_path(root);
                             }
@@ -1369,8 +1371,8 @@ impl CommanderApp {
                         for (i, bm) in bookmarks.iter().enumerate() {
                             ui.horizontal(|ui| {
                                 if ui
-                                    .small_button(bm.name.as_str())
-                                    .on_hover_text(&bm.path)
+                                    .small_button(crate::panel::nfc(&bm.name).as_str())
+                                    .on_hover_text(crate::panel::nfc(&bm.path))
                                     .clicked()
                                 {
                                     ui.close_menu();
@@ -1621,7 +1623,8 @@ impl CommanderApp {
                                             ui.close_menu();
                                         }
                                         if ui.button("Copy full path").clicked() {
-                                            ui.ctx().copy_text(path.display().to_string());
+                                            ui.ctx()
+                                                .copy_text(crate::panel::nfc(&path.display().to_string()));
                                             ui.close_menu();
                                         }
                                     });
@@ -2216,13 +2219,13 @@ impl CommanderApp {
             if self.toolbox.compare.left.is_empty() {
                 self.toolbox.compare.left = self
                     .first_file_entry(0)
-                    .map(|e| e.path.display().to_string())
+                    .map(|e| crate::panel::nfc(&e.path.display().to_string()))
                     .unwrap_or_default();
             }
             if self.toolbox.compare.right.is_empty() {
                 self.toolbox.compare.right = self
                     .first_file_entry(1)
-                    .map(|e| e.path.display().to_string())
+                    .map(|e| crate::panel::nfc(&e.path.display().to_string()))
                     .unwrap_or_default();
             }
         }

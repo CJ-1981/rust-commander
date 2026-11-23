@@ -37,7 +37,7 @@ impl SearchTool {
             );
             if ui.button("Browse...").clicked() {
                 if let Some(d) = rfd::FileDialog::new().pick_folder() {
-                    self.root = d.display().to_string();
+                    self.root = crate::panel::nfc(&d.display().to_string());
                 }
             }
         });
@@ -96,7 +96,10 @@ impl SearchTool {
                             } else {
                                 h.name.clone()
                             };
-                            let r = ui.selectable_label(false, egui::RichText::new(label).monospace());
+                            let r = ui.selectable_label(
+                                false,
+                                egui::RichText::new(crate::panel::nfc(&label)).monospace(),
+                            );
                             if r.double_clicked() {
                                 *nav = Some(h.path.clone());
                             }
@@ -105,7 +108,7 @@ impl SearchTool {
                             });
                         });
                         ui.label(
-                            egui::RichText::new(h.path.display().to_string())
+                            egui::RichText::new(crate::panel::nfc(&h.path.display().to_string()))
                                 .weak()
                                 .small(),
                         );
@@ -129,12 +132,12 @@ impl SearchTool {
     }
 
     fn start(&mut self, jobs: &mut Vec<Job>) {
-        let root = PathBuf::from(self.root.trim());
+        let root = crate::panel::resolve_typed_path(self.root.trim());
         if !root.is_dir() {
             self.error = Some("Start folder does not exist".to_string());
             return;
         }
-        let pat = self.pattern.trim().to_lowercase();
+        let pat = crate::panel::nfc(&self.pattern.trim().to_lowercase());
         self.error = None;
         self.running = true;
         self.hits.clear();
@@ -171,7 +174,10 @@ impl SearchTool {
                     if ft.is_dir() && !ft.is_symlink() {
                         queue.push_back(path.clone());
                     }
-                    if !pat.is_empty() && name.to_lowercase().contains(&pat) {
+                    // Match in NFC so a typed needle meets NFD disk names.
+                    if !pat.is_empty()
+                        && crate::panel::nfc(&name).to_lowercase().contains(&pat)
+                    {
                         let size = e
                             .metadata()
                             .map(|m| if m.is_dir() { 0 } else { m.len() })

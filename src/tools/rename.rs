@@ -81,7 +81,7 @@ impl RenameTool {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for p in &plans {
-                    let old = file_name(&p.path);
+                    let old = crate::panel::nfc(&file_name(&p.path));
                     if p.problem.is_empty() {
                         ui.horizontal(|ui| {
                             ui.monospace(old);

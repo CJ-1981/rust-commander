@@ -1,5 +1,5 @@
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
@@ -47,7 +47,7 @@ impl HashTool {
             );
             if ui.button("Browse...").clicked() {
                 if let Some(f) = rfd::FileDialog::new().pick_file() {
-                    self.path = f.display().to_string();
+                    self.path = crate::panel::nfc(&f.display().to_string());
                     self.error = None;
                 }
             }
@@ -130,7 +130,7 @@ impl HashTool {
     pub fn on_done(&mut self, state: JobState) {
         self.busy = false;
         if let Some(Outcome::Hash { path, md5, sha256 }) = state.outcome {
-            self.path = path;
+            self.path = crate::panel::nfc(&path);
             self.md5 = md5;
             self.sha256 = sha256;
             self.error = None;
@@ -140,7 +140,8 @@ impl HashTool {
     }
 
     fn start(&mut self, jobs: &mut Vec<Job>) {
-        let path = PathBuf::from(self.path.trim());
+        // Accept text in either normalization form (macOS stores NFD names).
+        let path = crate::panel::resolve_typed_path(self.path.trim());
         if !path.is_file() {
             self.error = Some("File not found (or not a regular file)".to_string());
             return;

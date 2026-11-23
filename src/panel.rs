@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use chrono::{DateTime, Local};
+use unicode_normalization::UnicodeNormalization;
 
 /// A single entry (file or directory) shown in a panel.
 #[derive(Clone, Debug)]
@@ -101,14 +102,18 @@ impl FilePanel {
         let path = if path.exists() {
             fs::canonicalize(&path).unwrap_or(path)
         } else {
-            path
+            // Misspelling check: try the other normalization form before
+            // giving up (NFC typed text vs NFD names on disk).
+            path.to_str()
+                .map(resolve_typed_path)
+                .unwrap_or_else(|| path.clone())
         };
         if record && self.path != path {
             self.back.push(self.path.clone());
             self.fwd.clear();
         }
         self.path = path;
-        self.path_edit = self.path.display().to_string();
+        self.path_edit = nfc(&self.path.display().to_string());
         self.cursor = 0;
         self.selected.clear();
         self.drag_from = None;
@@ -147,7 +152,9 @@ impl FilePanel {
             Ok(rd) => {
                 for e in rd.flatten() {
                     let path = e.path();
-                    let name = e.file_name().to_string_lossy().into_owned();
+                    // Display name in NFC; `path` keeps the raw on-disk form
+                    // for every filesystem operation.
+                    let name = nfc(&e.file_name().to_string_lossy());
                     let meta = e.metadata().ok();
                     let (is_dir, size, modified) = match &meta {
                         Some(m) => (
@@ -182,7 +189,7 @@ impl FilePanel {
         &mut self,
         dir_sizes: &std::collections::HashMap<String, (u64, u64)>,
     ) {
-        let needle = self.filter.to_lowercase();
+        let needle = nfc(&self.filter).to_lowercase();
         let mut idx: Vec<usize> = (0..self.entries.len())
             .filter(|&i| self.show_hidden || !is_hidden_name(&self.entries[i].name))
             .filter(|&i| {
@@ -393,6 +400,67 @@ impl Pane {
 /// path for roots).
 pub fn display_name(path: &Path) -> String {
     path.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
+        .map(|n| nfc(&n.to_string_lossy()))
         .unwrap_or_else(|| path.display().to_string())
+}
+
+/// Normalize a display string to Unicode NFC (composed form).
+///
+/// macOS keeps Finder-created names in decomposed NFD (each Hangul syllable
+/// split into conjoining jamo), and egui has no text shaping to re-compose
+/// them, so NFD names render as separated jamo characters. Normalizing
+/// display strings to NFC makes them readable; filesystem operations keep
+/// using raw `PathBuf`s, so on-disk bytes are never rewritten through this.
+pub fn nfc(s: &str) -> String {
+    s.nfc().collect()
+}
+
+/// Resolve a user-entered path string to an existing path.
+///
+/// The typed text may use the other Unicode normalization form than the
+/// names on disk (e.g. NFC text against NFD macOS names — or the reverse on
+/// Linux). Exact lookup is tried first; if it misses, the NFD spelling is
+/// tried so typed paths still resolve on normalization-sensitive systems.
+pub fn resolve_typed_path(s: &str) -> PathBuf {
+    let p = PathBuf::from(s);
+    if p.exists() || p.as_os_str().is_empty() {
+        return p;
+    }
+    for alt in [s.nfd().collect::<String>(), s.nfc().collect::<String>()] {
+        if alt != s {
+            let q = PathBuf::from(&alt);
+            if q.exists() {
+                return q;
+            }
+        }
+    }
+    p
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nfc_composes_decomposed_hangul() {
+        // Jamo sequence for "한글": HAN = ᄒ+ᅡ+ᆫ, GEUL = ᄀ+ᅳ+ᆯ.
+        let nfd = "\u{1112}\u{1161}\u{11AB}\u{1100}\u{1173}\u{11AF}";
+        assert_eq!(nfc(nfd), "한글");
+        assert_eq!(nfc("한글"), "한글");
+    }
+
+    #[test]
+    fn resolve_accepts_other_normalization_form() {
+        let tmp = std::env::temp_dir().join("rc-nfd-resolve");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        // Create the file with a decomposed (NFD) name, as Finder does.
+        let nfd: String = "한글.txt".nfd().collect();
+        let f = tmp.join(&nfd);
+        fs::write(&f, b"x").unwrap();
+        // Composed text must resolve to the file whichever form is returned.
+        let got = resolve_typed_path(tmp.join("한글.txt").to_str().unwrap());
+        assert!(got.is_file());
+        let _ = fs::remove_dir_all(&tmp);
+    }
 }
