@@ -113,4 +113,8 @@ The pipeline then builds all three targets, packages them (macOS `.app` bundles 
 
 ## License
 
+MIT for the project code. Bundled fonts have their own licenses: Noto Sans KR (resources/fonts) is distributed under the [SIL Open Font License 1.1](https://openfontlicense.org/).
+
+## License
+
 MIT - see [LICENSE](LICENSE).

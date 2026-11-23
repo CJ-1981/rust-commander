@@ -126,6 +126,24 @@ impl CommanderApp {
         } else {
             egui::Visuals::light()
         });
+        // Hangul fallback: egui's bundled fonts have no Korean coverage, so
+        // CJK file names rendered as tofu boxes. Noto Sans KR (SIL OFL) is
+        // appended last so it only serves glyphs the default fonts lack.
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "noto_sans_kr".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+                "../resources/fonts/NotoSansKR.ttf"
+            ))),
+        );
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            fonts
+                .families
+                .entry(family)
+                .or_default()
+                .push("noto_sans_kr".to_owned());
+        }
+        cc.egui_ctx.set_fonts(fonts);
         let start = start_dir();
         let mut app = Self {
             panes: [Pane::new(start.clone()), Pane::new(start)],
@@ -1060,6 +1078,10 @@ impl CommanderApp {
                     "Open selected file with system app",
                 ) {
                     self.open_external_current();
+                }
+                ui.separator();
+                if icon_button(ui, ICON_TOOLS, true, "Open the utility toolbox") {
+                    self.toolbox.show = true;
                 }
 
                 // Version, right-aligned (also in the OS window title).
@@ -2385,6 +2407,7 @@ const ICON_NEW_FOLDER: &str = "📁";
 const ICON_RENAME: &str = "📝";
 const ICON_DELETE: &str = "🗑";
 const ICON_OPEN_EXT: &str = "↗";
+const ICON_TOOLS: &str = "🔧";
 
 /// Toolbar button with an emoji icon. Returns true on click. Greyed out and
 /// inert when `enabled` is false (tooltip still explains why).
