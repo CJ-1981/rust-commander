@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use chrono::{DateTime, Local};
@@ -52,6 +52,8 @@ pub struct FilePanel {
     /// Anchor row (index into `visible`) of an in-progress press-drag
     /// multi-select; cleared on release, navigation and re-sorting.
     pub drag_from: Option<usize>,
+    /// Custom tab name; `None` shows the folder's own name.
+    pub name: Option<String>,
 }
 
 impl FilePanel {
@@ -68,6 +70,7 @@ impl FilePanel {
             ascending: true,
             load_error: None,
             drag_from: None,
+            name: None,
         };
         p.set_path(start);
         p
@@ -249,4 +252,67 @@ pub fn fmt_time(t: Option<SystemTime>) -> String {
         }
         None => "-".to_string(),
     }
+}
+
+/// One half of the dual-pane view: a set of folder tabs, one of them active.
+pub struct Pane {
+    pub tabs: Vec<FilePanel>,
+    pub active: usize,
+}
+
+impl Pane {
+    pub fn new(start: PathBuf) -> Self {
+        Self {
+            tabs: vec![FilePanel::new(start)],
+            active: 0,
+        }
+    }
+
+    /// The active tab's panel (read-only).
+    pub fn cur_ref(&self) -> &FilePanel {
+        let i = self.active.min(self.tabs.len().saturating_sub(1));
+        &self.tabs[i]
+    }
+
+    /// The active tab's panel.
+    pub fn cur(&mut self) -> &mut FilePanel {
+        let i = self.active.min(self.tabs.len().saturating_sub(1));
+        &mut self.tabs[i]
+    }
+
+    /// Open a new tab showing `path` and make it active.
+    pub fn open_tab(&mut self, path: PathBuf) {
+        self.tabs.push(FilePanel::new(path));
+        self.active = self.tabs.len() - 1;
+    }
+
+    /// Close tab `idx` (never the last one); keeps a sensible active index.
+    pub fn close_tab(&mut self, idx: usize) {
+        if self.tabs.len() <= 1 {
+            return;
+        }
+        let was_active = self.active == idx;
+        self.tabs.remove(idx);
+        if was_active {
+            self.active = self.active.min(self.tabs.len() - 1);
+        } else if idx < self.active {
+            self.active -= 1;
+        }
+    }
+
+    /// Label shown on a tab: the user's name if set, else the folder name.
+    pub fn tab_label(&self, idx: usize) -> String {
+        let tab = &self.tabs[idx];
+        tab.name
+            .clone()
+            .unwrap_or_else(|| display_name(&tab.path))
+    }
+}
+
+/// The name a folder gets on a tab: its last path component (or `/`-style
+/// path for roots).
+pub fn display_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
 }

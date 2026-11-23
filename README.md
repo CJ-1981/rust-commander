@@ -16,6 +16,7 @@ A **Total Commander-style dual-pane file manager** with a built-in **utility too
 - Single click selects, Ctrl+Click adds to the selection, Shift+Click selects a range, Insert/Space toggles selection at the cursor
 - Sort by name, size, modification date or extension - click the column headers
 - Editable path bar, Home button, drive/volume picker (Windows drive letters, macOS `/Volumes`), refresh, hidden-file toggle
+- Per-pane **folder tabs**: `+` opens a tab at the current folder, `Ctrl+T`/`Ctrl+W` add/close, double-click or right-click a tab to rename it; tabs survive restarts
 - Built-in text viewer (F3) and editor (F4) with save (Ctrl+S)
 - Open any file with its system default application (double-click or menu)
 - Active panel is operated with Total Commander-style keyboard shortcuts

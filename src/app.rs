@@ -8,7 +8,7 @@ use egui_extras::{Column, TableBuilder};
 
 use crate::jobs::{Job, JobKind, JobState};
 use crate::ops;
-use crate::panel::{fmt_size, fmt_time, list_roots, FileEntry, FilePanel, SortKey};
+use crate::panel::{fmt_size, fmt_time, list_roots, FileEntry, FilePanel, Pane, SortKey};
 use crate::tools::{ToolTab, Toolbox};
 use crate::viewer::Viewer;
 
@@ -19,6 +19,8 @@ enum Modal {
     Mkdir { name: String },
     Rename { path: PathBuf, name: String },
     Delete { count: usize, preview: Vec<String> },
+    /// Rename a folder tab of pane `pane_idx` (empty name = folder name).
+    RenameTab { pane_idx: usize, tab_idx: usize, name: String },
     /// Confirm discarding unsaved edits in the viewer.
     DiscardViewer,
 }
@@ -68,11 +70,13 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("F7", "New folder"),
     ("F8 / Delete", "Delete selection (permanent)"),
     ("Ctrl+S", "Save file in the editor"),
+    ("Ctrl+T", "New folder tab"),
+    ("Ctrl+W", "Close folder tab"),
     ("Esc", "Close dialog"),
 ];
 
 pub struct CommanderApp {
-    panels: [FilePanel; 2],
+    panes: [Pane; 2],
     active: usize,
     dark: bool,
     /// Width of the left pane (the divider position); `None` = half/half.
@@ -108,7 +112,7 @@ impl CommanderApp {
         });
         let start = start_dir();
         let mut app = Self {
-            panels: [FilePanel::new(start.clone()), FilePanel::new(start)],
+            panes: [Pane::new(start.clone()), Pane::new(start)],
             active: 0,
             dark: prefs.dark,
             pane_width: prefs.pane_width,
@@ -119,6 +123,22 @@ impl CommanderApp {
             show_help: false,
             toasts: Vec::new(),
         };
+        if !prefs.tabs.is_empty() {
+            for (pane, saved) in app.panes.iter_mut().zip(&prefs.tabs) {
+                if saved.is_empty() {
+                    continue;
+                }
+                pane.tabs = saved
+                    .iter()
+                    .map(|t| {
+                        let mut fp = FilePanel::new(PathBuf::from(&t.path));
+                        fp.name = t.name.clone();
+                        fp
+                    })
+                    .collect();
+                pane.active = pane.active.min(pane.tabs.len() - 1);
+            }
+        }
         if prefs.show_hidden {
             app.set_hidden(true);
         }
@@ -140,24 +160,29 @@ impl CommanderApp {
     }
 
     fn reload_both(&mut self) {
-        self.panels[0].reload();
-        self.panels[1].reload();
+        for pane in &mut self.panes {
+            for tab in &mut pane.tabs {
+                tab.reload();
+            }
+        }
     }
 
     fn set_hidden(&mut self, show: bool) {
-        for p in self.panels.iter_mut() {
-            p.show_hidden = show;
-            p.apply_filter_sort();
+        for pane in &mut self.panes {
+            for tab in &mut pane.tabs {
+                tab.show_hidden = show;
+                tab.apply_filter_sort();
+            }
         }
     }
 
     fn current_entry(&self, panel_idx: usize) -> Option<FileEntry> {
-        let p = &self.panels[panel_idx];
+        let p = self.panes[panel_idx].cur_ref();
         p.visible_entry(p.cursor).cloned()
     }
 
     fn selected_entries(&self, panel_idx: usize) -> Vec<FileEntry> {
-        let p = &self.panels[panel_idx];
+        let p = self.panes[panel_idx].cur_ref();
         p.visible
             .iter()
             .filter(|&&vi| p.selected.contains(&p.entries[vi].path))
@@ -180,7 +205,7 @@ impl CommanderApp {
     /// contains it the selection stands, otherwise the selection is reduced to
     /// that single entry (used by row context-menu actions).
     fn focus_op_selection(&mut self, panel_idx: usize, path: &PathBuf) {
-        let p = &mut self.panels[panel_idx];
+        let p = self.panes[panel_idx].cur();
         if !p.selected.contains(path) {
             p.selected.clear();
             p.selected.insert(path.clone());
@@ -195,7 +220,7 @@ impl CommanderApp {
     }
 
     fn move_cursor(&mut self, delta: i32) {
-        let p = &mut self.panels[self.active];
+        let p = self.panes[self.active].cur();
         if p.visible.is_empty() {
             return;
         }
@@ -204,7 +229,7 @@ impl CommanderApp {
     }
 
     fn set_cursor(&mut self, idx: usize) {
-        let p = &mut self.panels[self.active];
+        let p = self.panes[self.active].cur();
         if !p.visible.is_empty() {
             p.cursor = idx.min(p.visible.len() - 1);
         }
@@ -212,7 +237,7 @@ impl CommanderApp {
 
     fn toggle_select_cursor(&mut self) {
         if let Some(e) = self.current_entry(self.active) {
-            let p = &mut self.panels[self.active];
+            let p = self.panes[self.active].cur();
             if p.selected.contains(&e.path) {
                 p.selected.remove(&e.path);
             } else {
@@ -223,12 +248,12 @@ impl CommanderApp {
 
     fn nav_parent(&mut self) {
         if let Some(par) = self
-            .panels[self.active]
+            .panes[self.active].cur()
             .path
             .parent()
             .map(|p| p.to_path_buf())
         {
-            self.panels[self.active].set_path(par);
+            self.panes[self.active].cur().set_path(par);
         }
     }
 
@@ -240,7 +265,7 @@ impl CommanderApp {
     fn enter_current(&mut self) {
         if let Some(e) = self.current_entry(self.active) {
             if e.is_dir {
-                self.panels[self.active].set_path(e.path);
+                self.panes[self.active].cur().set_path(e.path);
             } else {
                 if self.viewer_busy_with_edits() {
                     self.toast("Save or discard the open editor first", true);
@@ -281,7 +306,7 @@ impl CommanderApp {
         if items.is_empty() {
             return;
         }
-        let target = self.panels[1 - self.active].path.display().to_string();
+        let target = self.panes[1 - self.active].cur().path.display().to_string();
         self.modal = Some(Modal::Copy {
             target,
             count: items.len(),
@@ -293,7 +318,7 @@ impl CommanderApp {
         if items.is_empty() {
             return;
         }
-        let target = self.panels[1 - self.active].path.display().to_string();
+        let target = self.panes[1 - self.active].cur().path.display().to_string();
         self.modal = Some(Modal::Move {
             target,
             count: items.len(),
@@ -329,6 +354,15 @@ impl CommanderApp {
             Some(Modal::Mkdir { name }) => self.do_mkdir(name),
             Some(Modal::Rename { path, name }) => self.do_rename(path, name),
             Some(Modal::Delete { .. }) => self.start_delete(),
+            Some(Modal::RenameTab {
+                pane_idx,
+                tab_idx,
+                name,
+            }) => {
+                let name = name.trim().to_string();
+                self.panes[pane_idx].tabs[tab_idx].name =
+                    if name.is_empty() { None } else { Some(name) };
+            }
             Some(Modal::DiscardViewer) => self.viewer = None,
             None => {}
         }
@@ -436,7 +470,7 @@ impl CommanderApp {
             self.toast("Folder name is empty", true);
             return;
         }
-        let path = self.panels[self.active].path.join(&name);
+        let path = self.panes[self.active].cur().path.join(&name);
         match std::fs::create_dir(&path) {
             Ok(()) => {
                 self.reload_both();
@@ -550,6 +584,22 @@ impl CommanderApp {
         }
 
         if !typing && !modal_open {
+            // Folder tab shortcuts.
+            let (ctrl, key_t, key_w) = ctx.input(|i| {
+                (
+                    i.modifiers.ctrl,
+                    i.key_pressed(egui::Key::T),
+                    i.key_pressed(egui::Key::W),
+                )
+            });
+            if ctrl && key_t {
+                let path = self.panes[self.active].cur().path.clone();
+                self.panes[self.active].open_tab(path);
+            }
+            if ctrl && key_w {
+                self.panes[self.active].close_tab(self.panes[self.active].active);
+            }
+
             let (tab, up, down, enter, back, ins, space, del, home, end) = ctx.input(|i| (
                 i.key_pressed(egui::Key::Tab),
                 i.key_pressed(egui::Key::ArrowUp),
@@ -575,7 +625,7 @@ impl CommanderApp {
                 self.set_cursor(0);
             }
             if end {
-                let len = self.panels[self.active].visible.len();
+                let len = self.panes[self.active].cur().visible.len();
                 if len > 0 {
                     self.set_cursor(len - 1);
                 }
@@ -629,14 +679,14 @@ impl CommanderApp {
                         self.toolbox.show = true;
                         self.toolbox.tab = ToolTab::Search;
                         if self.toolbox.search.root.trim().is_empty() {
-                            self.toolbox.search.root = self.panels[self.active].path.display().to_string();
+                            self.toolbox.search.root = self.panes[self.active].cur().path.display().to_string();
                         }
                     }
                     if ui.button("Duplicate finder").clicked() {
                         self.toolbox.show = true;
                         self.toolbox.tab = ToolTab::Duplicates;
                         if self.toolbox.dup.root.trim().is_empty() {
-                            self.toolbox.dup.root = self.panels[self.active].path.display().to_string();
+                            self.toolbox.dup.root = self.panes[self.active].cur().path.display().to_string();
                         }
                     }
                     if ui.button("Multi-file rename").clicked() {
@@ -654,7 +704,7 @@ impl CommanderApp {
                 });
 
                 ui.menu_button("View", |ui| {
-                    let mut hid = self.panels[0].show_hidden;
+                    let mut hid = self.panes[0].cur_ref().show_hidden;
                     if ui.checkbox(&mut hid, "Show hidden files").changed() {
                         self.set_hidden(hid);
                     }
@@ -896,6 +946,9 @@ impl CommanderApp {
         // replaces entries/visible, and the loop below indexes them with
         // bounds taken before the pass (panicked on folder double-click).
         let nav = RefCell::new(None::<PathBuf>);
+        // Tab actions deferred out of the frame closure (rename needs
+        // `self.modal`).
+        let tab_rename = RefCell::new(None::<usize>);
 
         egui::Frame::default()
             .stroke(stroke)
@@ -903,7 +956,62 @@ impl CommanderApp {
             .rounding(6.0)
             .inner_margin(egui::Margin::same(8.0))
             .show(ui, |ui| {
-                let p = &mut self.panels[idx];
+                let pane = &mut self.panes[idx];
+
+                // Folder tab strip.
+                let mut new_tab = false;
+                let mut close_tab: Option<usize> = None;
+                ui.horizontal_wrapped(|ui| {
+                    let labels: Vec<String> =
+                        (0..pane.tabs.len()).map(|ti| pane.tab_label(ti)).collect();
+                    for (ti, label) in labels.iter().enumerate() {
+                        let r = ui.selectable_label(ti == pane.active, label.as_str())
+                            .on_hover_text(match pane.tabs[ti].name.clone() {
+                                Some(custom) => format!("{} ({})", label, custom),
+                                None => pane.tabs[ti].path.display().to_string(),
+                            });
+                        if r.clicked() {
+                            pane.active = ti;
+                            clicked.set(true);
+                        }
+                        if r.clicked_by(egui::PointerButton::Middle)
+                            && pane.tabs.len() > 1
+                        {
+                            close_tab = Some(ti);
+                        }
+                        if r.double_clicked() {
+                            tab_rename.borrow_mut().replace(ti);
+                        }
+                        r.context_menu(|ui| {
+                            clicked.set(true);
+                            if ui.button("Rename tab…").clicked() {
+                                tab_rename.borrow_mut().replace(ti);
+                                ui.close_menu();
+                            }
+                            if pane.tabs.len() > 1 && ui.button("Close tab").clicked() {
+                                close_tab = Some(ti);
+                                ui.close_menu();
+                            }
+                        });
+                    }
+                    if ui
+                        .small_button("+")
+                        .on_hover_text("New tab at the current folder (Ctrl+T)")
+                        .clicked()
+                    {
+                        new_tab = true;
+                        clicked.set(true);
+                    }
+                });
+                if new_tab {
+                    let path = pane.cur().path.clone();
+                    pane.open_tab(path);
+                }
+                if let Some(ti) = close_tab {
+                    pane.close_tab(ti);
+                }
+
+                let p = pane.cur();
 
                 // Editable path bar.
                 ui.horizontal(|ui| {
@@ -1249,6 +1357,14 @@ impl CommanderApp {
 
         // Apply deferred actions collected while drawing (they need `self`,
         // which was borrowed by the frame closures above).
+        if let Some(ti) = tab_rename.borrow_mut().take() {
+            let name = self.panes[idx].tab_label(ti);
+            self.modal = Some(Modal::RenameTab {
+                pane_idx: idx,
+                tab_idx: ti,
+                name,
+            });
+        }
         if go_failed.get() {
             self.toast("Folder not found", true);
         }
@@ -1272,7 +1388,8 @@ impl CommanderApp {
                 }
                 RowAction::Rename(path) => {
                     self.active = idx;
-                    let name = self.panels[idx]
+                    let name = self.panes[idx]
+                        .cur()
                         .entries
                         .iter()
                         .find(|e| e.path == path)
@@ -1406,6 +1523,32 @@ impl CommanderApp {
                         closed = true;
                     }
                 }
+                Modal::RenameTab { name, .. } => {
+                    let mut open = true;
+                    egui::Window::new("Rename tab")
+                        .open(&mut open)
+                        .collapsible(false)
+                        .show(ctx, |ui| {
+                            ui.label("Tab name (empty = folder name):");
+                            let resp =
+                                ui.add(egui::TextEdit::singleline(name).desired_width(320.0));
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Rename").clicked()
+                                    || (resp.lost_focus()
+                                        && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                                {
+                                    confirmed = true;
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    closed = true;
+                                }
+                            });
+                        });
+                    if !open {
+                        closed = true;
+                    }
+                }
                 Modal::Delete { count, preview } => {
                     let mut open = true;
                     egui::Window::new("Confirm delete")
@@ -1489,7 +1632,7 @@ impl CommanderApp {
             self.toast("Renamed files - panels refreshed", false);
         }
         if let Some(target) = nav {
-            let p = &mut self.panels[self.active];
+            let p = self.panes[self.active].cur();
             if target.is_dir() {
                 p.set_path(target);
             } else {
@@ -1602,8 +1745,21 @@ impl eframe::App for CommanderApp {
             "prefs",
             &Prefs {
                 dark: self.dark,
-                show_hidden: self.panels[0].show_hidden,
+                show_hidden: self.panes[0].cur_ref().show_hidden,
                 pane_width: self.pane_width,
+                tabs: self
+                    .panes
+                    .iter()
+                    .map(|pane| {
+                        pane.tabs
+                            .iter()
+                            .map(|t| PersistTab {
+                                path: t.path.display().to_string(),
+                                name: t.name.clone(),
+                            })
+                            .collect()
+                    })
+                    .collect(),
             },
         );
     }
@@ -1695,12 +1851,22 @@ fn drag_select(ui: &mut egui::Ui, p: &mut FilePanel, vi: usize, path: &std::path
     }
 }
 
+/// One persisted folder tab (path + optional custom name).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistTab {
+    path: String,
+    name: Option<String>,
+}
+
 /// Persisted preferences, loaded at startup and written on shutdown.
 #[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 struct Prefs {
     dark: bool,
     show_hidden: bool,
     pane_width: Option<f32>,
+    /// Folder tabs per pane (paths + names); entries reload on startup.
+    tabs: Vec<Vec<PersistTab>>,
 }
 
 impl Default for Prefs {
@@ -1709,6 +1875,7 @@ impl Default for Prefs {
             dark: true,
             show_hidden: false,
             pane_width: None,
+            tabs: Vec::new(),
         }
     }
 }
