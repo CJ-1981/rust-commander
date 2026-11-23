@@ -7,8 +7,10 @@ use crate::jobs::{DiffKind, DiffRow, Job, JobKind, JobState, Outcome};
 
 const MAX_FILE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_ROWS: usize = 20_000;
+const CONTEXT: usize = 3;
 
-/// Side-by-side (left/right) text comparison with a unified colored diff.
+/// Two-file text comparison with a side-by-side colored diff
+/// (left column = left file, right column = right file).
 #[derive(Default)]
 pub struct CompareTool {
     pub left: String,
@@ -90,42 +92,91 @@ impl CompareTool {
         if let Some(res) = &self.result {
             ui.separator();
             if res.added == 0 && res.removed == 0 {
-                ui.label(format!(
-                    "Files are identical ({} lines).",
-                    res.same
-                ));
+                ui.label(format!("Files are identical ({} lines).", res.same));
                 return;
             }
+            let added = added_color(ui);
+            let removed = removed_color(ui);
             ui.label(format!(
-                "{} is {:>6} lines and {} is {:>6} lines",
+                "{} is {} lines and {} is {} lines",
                 file_name_of(&res.left),
                 res.removed + res.same,
                 file_name_of(&res.right),
                 res.added + res.same,
             ));
             ui.label(format!(
-                "added: {}, removed: {}, identical lines: {}{}",
+                "added: {}, removed: {}{}",
                 res.added,
                 res.removed,
-                res.same,
                 if res.truncated { " (output truncated)" } else { "" }
             ));
             ui.add_space(4.0);
-            let added = added_color(ui);
-            egui::ScrollArea::vertical()
-                .max_height(320.0)
+
+            egui::ScrollArea::both()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    for row in &res.rows {
-                        let (sign, color) = match row.kind {
-                            DiffKind::Same => (" ", ui.visuals().weak_text_color()),
-                            DiffKind::Removed => ("−", ui.visuals().error_fg_color),
-                            DiffKind::Added => ("+", added),
-                        };
-                        ui.monospace(
-                            egui::RichText::new(format!("{} {}", sign, row.text)).color(color),
-                        );
-                    }
+                    egui::Grid::new("diff_grid")
+                        .num_columns(4)
+                        .spacing([10.0, 2.0])
+                        .show(ui, |ui| {
+                            for row in &res.rows {
+                                match &row.kind {
+                                    DiffKind::Gap => {
+                                        let n = row.left.as_deref().unwrap_or("");
+                                        ui.label(egui::RichText::new("").small());
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "⋯ {} unchanged lines ⋯",
+                                                n
+                                            ))
+                                            .weak()
+                                            .small(),
+                                        );
+                                        ui.label(egui::RichText::new("").small());
+                                        ui.label(egui::RichText::new("").small());
+                                    }
+                                    DiffKind::Same => {
+                                        ui.label(egui::RichText::new(num(row.lno)).weak().small());
+                                        ui.monospace(
+                                            egui::RichText::new(text(row.left.as_ref()))
+                                                .color(ui.visuals().weak_text_color()),
+                                        );
+                                        ui.label(egui::RichText::new(num(row.rno)).weak().small());
+                                        ui.monospace(
+                                            egui::RichText::new(text(row.right.as_ref()))
+                                                .color(ui.visuals().weak_text_color()),
+                                        );
+                                    }
+                                    DiffKind::Removed => {
+                                        ui.label(egui::RichText::new(num(row.lno)).weak().small());
+                                        ui.monospace(
+                                            egui::RichText::new(text(row.left.as_ref())).color(removed),
+                                        );
+                                        ui.label(egui::RichText::new("").small());
+                                        ui.monospace(egui::RichText::new(""));
+                                    }
+                                    DiffKind::Added => {
+                                        ui.label(egui::RichText::new("").small());
+                                        ui.monospace(egui::RichText::new(""));
+                                        ui.label(egui::RichText::new(num(row.rno)).weak().small());
+                                        ui.monospace(
+                                            egui::RichText::new(text(row.right.as_ref())).color(added),
+                                        );
+                                    }
+                                    DiffKind::Replaced => {
+                                        ui.label(egui::RichText::new(num(row.lno)).weak().small());
+                                        ui.monospace(
+                                            egui::RichText::new(text(row.left.as_ref())).color(removed),
+                                        );
+                                        ui.label(egui::RichText::new(num(row.rno)).weak().small());
+                                        ui.monospace(
+                                            egui::RichText::new(text(row.right.as_ref())).color(added),
+                                        );
+                                    }
+                                }
+                                ui.end_row();
+                            }
+                        });
                 });
         }
     }
@@ -216,7 +267,7 @@ fn compare_files(
         s.current = "diffing...".to_string();
     }
 
-    // Identical content: grouped_ops would yield no groups at all, so report
+    // Identical content: the diff would yield no groups at all, so report
     // it directly instead of iterating.
     if a == b {
         return Ok(WorkResult {
@@ -225,48 +276,182 @@ fn compare_files(
         });
     }
 
-    let diff = similar::TextDiff::from_lines(&a, &b);
+    let old_lines: Vec<&str> = a.lines().collect();
+    let new_lines: Vec<&str> = b.lines().collect();
+    let diff = similar::TextDiff::configure().diff_lines(&a, &b);
     let mut res = WorkResult::default();
-    for group in diff.grouped_ops(3) {
+    let mut lno: u32 = 1;
+    let mut rno: u32 = 1;
+    let mut prev_old_end: usize = 0;
+    let mut rows_full = false;
+
+    for group in diff.grouped_ops(CONTEXT) {
+        // Skipped unchanged block before this group (not before the first).
+        let skipped = group
+            .first()
+            .map(|op| op.old_range().start)
+            .unwrap_or(0)
+            .saturating_sub(prev_old_end);
+        if skipped > 0 && !res.rows.is_empty() && !rows_full {
+            res.rows.push(DiffRow {
+                kind: DiffKind::Gap,
+                lno: None,
+                left: Some(format!("{}", skipped)),
+                rno: None,
+                right: None,
+            });
+        }
         for op in group.iter() {
-            for change in diff.iter_changes(op) {
-                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                    res.truncated = true;
-                    return Ok(res);
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                res.truncated = true;
+                return Ok(res);
+            }
+            let old = op.old_range();
+            let new = op.new_range();
+            match op.tag() {
+                similar::DiffTag::Equal => {
+                    for i in 0..old.len() {
+                        push_row(
+                            &mut res,
+                            &mut rows_full,
+                            &mut lno,
+                            &mut rno,
+                            DiffKind::Same,
+                            Some(old_lines[old.start + i].to_string()),
+                            Some(new_lines[new.start + i].to_string()),
+                        );
+                    }
                 }
-                let text = change.value().trim_end_matches('\n').to_string();
-                let kind = match change.tag() {
-                    similar::ChangeTag::Equal => {
-                        res.same += 1;
-                        DiffKind::Same
+                similar::DiffTag::Delete => {
+                    for i in 0..old.len() {
+                        push_row(
+                            &mut res,
+                            &mut rows_full,
+                            &mut lno,
+                            &mut rno,
+                            DiffKind::Removed,
+                            Some(old_lines[old.start + i].to_string()),
+                            None,
+                        );
                     }
-                    similar::ChangeTag::Delete => {
-                        res.removed += 1;
-                        DiffKind::Removed
+                }
+                similar::DiffTag::Insert => {
+                    for i in 0..new.len() {
+                        push_row(
+                            &mut res,
+                            &mut rows_full,
+                            &mut lno,
+                            &mut rno,
+                            DiffKind::Added,
+                            None,
+                            Some(new_lines[new.start + i].to_string()),
+                        );
                     }
-                    similar::ChangeTag::Insert => {
-                        res.added += 1;
-                        DiffKind::Added
+                }
+                similar::DiffTag::Replace => {
+                    let n = old.len().max(new.len());
+                    for i in 0..n {
+                        let l = old_lines.get(old.start + i).map(|s| s.to_string());
+                        let r = new_lines.get(new.start + i).map(|s| s.to_string());
+                        let kind = match (&l, &r) {
+                            (Some(_), Some(_)) => DiffKind::Replaced,
+                            (Some(_), None) => DiffKind::Removed,
+                            (None, Some(_)) => DiffKind::Added,
+                            (None, None) => continue,
+                        };
+                        push_row(&mut res, &mut rows_full, &mut lno, &mut rno, kind, l, r);
                     }
-                };
-                if res.rows.len() < MAX_ROWS {
-                    res.rows.push(DiffRow { kind, text });
-                } else {
-                    res.truncated = true;
                 }
             }
         }
+        prev_old_end = group
+            .last()
+            .map(|op| op.old_range().end)
+            .unwrap_or(prev_old_end);
     }
+
     Ok(res)
 }
 
-/// Theme-aware green for added diff lines.
+/// Append one aligned row, tracking line numbers, per-kind counts and the
+/// global row cap (once full, further rows are dropped but changes counted).
+fn push_row(
+    res: &mut WorkResult,
+    rows_full: &mut bool,
+    lno: &mut u32,
+    rno: &mut u32,
+    kind: DiffKind,
+    left: Option<String>,
+    right: Option<String>,
+) {
+    let (mut l, mut r) = (None, None);
+    match kind {
+        DiffKind::Same | DiffKind::Replaced => {
+            l = Some(*lno);
+            r = Some(*rno);
+        }
+        DiffKind::Removed => l = Some(*lno),
+        DiffKind::Added => r = Some(*rno),
+        DiffKind::Gap => {}
+    }
+    if left.is_some() {
+        *lno += 1;
+    }
+    if right.is_some() {
+        *rno += 1;
+    }
+    match kind {
+        DiffKind::Same => res.same += 1,
+        DiffKind::Removed => res.removed += 1,
+        DiffKind::Added => res.added += 1,
+        DiffKind::Replaced => {
+            res.removed += 1;
+            res.added += 1;
+        }
+        DiffKind::Gap => {}
+    }
+    if !*rows_full {
+        if res.rows.len() >= MAX_ROWS {
+            *rows_full = true;
+            res.truncated = true;
+        } else {
+            res.rows.push(DiffRow {
+                kind,
+                lno: l,
+                left,
+                rno: r,
+                right,
+            });
+        }
+    }
+}
+
+/// Theme-aware colors for diff lines.
 fn added_color(ui: &egui::Ui) -> egui::Color32 {
     if ui.visuals().dark_mode {
         egui::Color32::from_rgb(120, 200, 140)
     } else {
         egui::Color32::from_rgb(0, 130, 80)
     }
+}
+
+fn removed_color(ui: &egui::Ui) -> egui::Color32 {
+    if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(240, 110, 110)
+    } else {
+        egui::Color32::from_rgb(180, 30, 30)
+    }
+}
+
+fn num(n: Option<u32>) -> String {
+    match n {
+        Some(n) => n.to_string(),
+        None => String::new(),
+    }
+}
+
+fn text(s: Option<&String>) -> String {
+    s.cloned().unwrap_or_default()
 }
 
 fn file_name_of(path: &str) -> String {
@@ -297,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn changed_files_count_added_and_removed() {
+    fn changed_files_align_side_by_side() {
         let tmp = std::env::temp_dir().join("rc-cmp-diff");
         fs::create_dir_all(&tmp).unwrap();
         let a = tmp.join("a.txt");
@@ -307,9 +492,24 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let st = std::sync::Mutex::new(JobState::default());
         let res = compare_files(a.to_str().unwrap(), b.to_str().unwrap(), &st, &cancel).unwrap();
-        assert_eq!(res.removed, 1); // "two"
+        assert_eq!(res.removed, 1); // "two" (replaced pair counts as removed)
         assert_eq!(res.added, 2); // "TWO", "four"
         assert_eq!(res.same, 2); // "one", "three"
+        // Side-by-side alignment: the replaced pair shares a row.
+        let two = res
+            .rows
+            .iter()
+            .find(|r| r.left.as_deref() == Some("two"))
+            .unwrap();
+        assert_eq!(two.kind, DiffKind::Replaced);
+        assert_eq!(two.right.as_deref(), Some("TWO"));
+        let four = res
+            .rows
+            .iter()
+            .find(|r| r.right.as_deref() == Some("four"))
+            .unwrap();
+        assert_eq!(four.kind, DiffKind::Added);
+        assert_eq!(four.lno, None);
         let _ = fs::remove_dir_all(&tmp);
     }
 

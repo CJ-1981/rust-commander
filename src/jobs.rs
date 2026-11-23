@@ -28,18 +28,30 @@ pub struct DirSize {
     pub items: u64,
 }
 
-/// One line of a text comparison (same content, or unique to one side).
+/// Kind of one side-by-side comparison row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DiffKind {
+    /// Line present in both files (identical).
     Same,
+    /// Line only in the left file (removed relative to the right).
     Removed,
+    /// Line only in the right file (added relative to the left).
     Added,
+    /// Both sides present but different (replaced pair).
+    Replaced,
+    /// Skipped block of unchanged lines; payload is the skipped count.
+    Gap,
 }
 
+/// One aligned row of the side-by-side comparison view: `None` on a side
+/// means that file has no line at this position.
 #[derive(Clone, Debug)]
 pub struct DiffRow {
     pub kind: DiffKind,
-    pub text: String,
+    pub lno: Option<u32>,
+    pub left: Option<String>,
+    pub rno: Option<u32>,
+    pub right: Option<String>,
 }
 
 /// Result payload delivered by a finished background job.
