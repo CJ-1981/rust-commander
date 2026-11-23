@@ -54,6 +54,10 @@ pub struct FilePanel {
     pub drag_from: Option<usize>,
     /// Custom tab name; `None` shows the folder's own name.
     pub name: Option<String>,
+    /// Request to scroll the (keyboard-moved) cursor row into view; consumed
+    /// by the table pass. Never set by mouse scrolling, so wheel scrolling is
+    /// not fought by the auto-scroll.
+    pub scroll_needed: bool,
 }
 
 impl FilePanel {
@@ -71,6 +75,7 @@ impl FilePanel {
             load_error: None,
             drag_from: None,
             name: None,
+            scroll_needed: false,
         };
         p.set_path(start);
         p
@@ -154,6 +159,7 @@ impl FilePanel {
         });
         self.visible = idx;
         self.drag_from = None;
+        self.scroll_needed = true;
         if self.cursor >= self.visible.len() {
             self.cursor = self.visible.len().saturating_sub(1);
         }

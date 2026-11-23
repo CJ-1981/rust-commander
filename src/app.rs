@@ -215,6 +215,7 @@ impl CommanderApp {
                 .position(|&vi| &p.entries[vi].path == path)
             {
                 p.cursor = vi;
+                p.scroll_needed = true;
             }
         }
     }
@@ -226,12 +227,14 @@ impl CommanderApp {
         }
         let cur = p.cursor as i32 + delta;
         p.cursor = cur.clamp(0, p.visible.len() as i32 - 1) as usize;
+        p.scroll_needed = true;
     }
 
     fn set_cursor(&mut self, idx: usize) {
         let p = self.panes[self.active].cur();
         if !p.visible.is_empty() {
             p.cursor = idx.min(p.visible.len() - 1);
+            p.scroll_needed = true;
         }
     }
 
@@ -614,6 +617,8 @@ impl CommanderApp {
             ));
             if tab {
                 self.active = 1 - self.active;
+                // Bring the newly active pane's cursor into view.
+                self.panes[self.active].cur().scroll_needed = true;
             }
             if up {
                 self.move_cursor(-1);
@@ -1137,9 +1142,12 @@ impl CommanderApp {
                                 // Name cell (primary interaction).
                                 row.col(|ui| {
                                     // Keep the keyboard cursor visible while
-                                    // navigating with the arrow keys.
-                                    if is_cur {
+                                    // navigating with the arrow keys — only
+                                    // on cursor moves, so wheel scrolling is
+                                    // never fought by the auto-scroll.
+                                    if is_cur && p.scroll_needed {
                                         ui.scroll_to_cursor(None);
+                                        p.scroll_needed = false;
                                     }
                                     let mut txt = egui::RichText::new(&name);
                                     txt = if is_dir {
