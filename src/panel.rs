@@ -17,6 +17,20 @@ pub struct FileEntry {
 }
 
 impl FileEntry {
+    /// Entry for a path that did not come from a panel listing (a file
+    /// dropped from the OS). `path` keeps the on-disk bytes; only the shown
+    /// name is normalized.
+    pub fn from_path(path: &Path) -> Self {
+        let name = nfc(&path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default());
+        Self {
+            name,
+            path: path.to_path_buf(),
+            is_dir: path.is_dir(),
+            size: 0,
+            modified: None,
+        }
+    }
+
     pub fn ext_lower(&self) -> String {
         self.path
             .extension()
@@ -65,6 +79,17 @@ pub struct FilePanel {
     pub fwd: Vec<PathBuf>,
     /// Case-insensitive name filter narrowing the listing.
     pub filter: String,
+    /// Selection as it was when the current press-drag began; the swept
+    /// range is added on top of it.
+    pub sweep_base: HashSet<PathBuf>,
+    /// The drag began on a row that was already selected, so it extends the
+    /// selection instead of replacing it.
+    pub sweep_kept_base: bool,
+    /// Visible index of the row the current mouse press began on.
+    pub press_row: Option<usize>,
+    /// Range selection is suspended until the button is released (set once a
+    /// drag has turned into a drop into the other pane).
+    pub sweep_locked: bool,
 }
 
 impl FilePanel {
@@ -86,6 +111,10 @@ impl FilePanel {
             back: Vec::new(),
             fwd: Vec::new(),
             filter: String::new(),
+            sweep_base: HashSet::new(),
+            sweep_kept_base: false,
+            press_row: None,
+            sweep_locked: false,
         };
         p.set_path(start);
         p
@@ -263,6 +292,16 @@ impl FilePanel {
             }
         }
         (d, f, b)
+    }
+
+    /// Listed entries whose paths are in `paths`, in listing order.
+    pub fn entries_matching(&self, paths: &HashSet<PathBuf>) -> Vec<FileEntry> {
+        self.visible
+            .iter()
+            .filter_map(|&vi| self.entries.get(vi))
+            .filter(|e| paths.contains(&e.path))
+            .cloned()
+            .collect()
     }
 
     /// Selected stats: (items, bytes of selected files).

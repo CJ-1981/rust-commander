@@ -21,7 +21,8 @@ A **Total Commander-style dual-pane file manager** with a built-in **utility too
 - **Navigation**: per-tab back/forward history (`Alt+←`/`Alt+→`), Favorites menu for pinned folders, live name filter (`Ctrl+F`)
 - **Power tools**: recursive folder sizes with item counts, open-a-terminal-here button, checksum verification in the hash tool, and a two-file text comparison with a colored unified diff
 - Built-in text viewer (F3) and editor (F4) with save (Ctrl+S)
-- Open any file with its system default application (double-click or menu)
+- Open files in the built-in viewer (double-click, F3) or with the system default application (toolbar button, right-click menu)
+- **Drag and drop**: press a file - or a whole selection - and carry it into the other pane to copy or move it. Release and choose, or hold Shift (move) or Ctrl / Command (copy) to skip the menu. Drop onto a folder row to target that folder. Files dropped from Finder or Explorer onto a pane get the same choice. Dragging inside a pane still range-selects.
 - Active panel is operated with Total Commander-style keyboard shortcuts
 
 ### File operations (background threads with progress + cancel)
@@ -29,7 +30,7 @@ A **Total Commander-style dual-pane file manager** with a built-in **utility too
 - **F5** Copy selection to the opposite panel
 - **F6** Move selection to the opposite panel, **Shift+F6** rename
 - **F7** New folder
-- **F8/Delete** Delete selection (permanent, with confirmation dialog)
+- **F8/Delete** Move selection to the Trash; the same dialog offers *Delete permanently*
 - Recursive copy/move/delete of folder trees; fast rename on the same volume, copy+delete fallback across volumes
 - All long operations run on worker threads with live progress in the status bar and a Stop button
 
@@ -38,6 +39,8 @@ A **Total Commander-style dual-pane file manager** with a built-in **utility too
 - **Hash calculator**: MD5 + SHA-256 streamed in chunks, with progress bar and copy-to-clipboard
 - **File search**: recursive name search (case-insensitive substring), live progress, capped results
 - **Duplicate finder**: content-based duplicate detection (group by size, then hash), wasted-space summary
+- **Multi rename**: rename many files at once with `*` (keep the original part) and `[N]` (counter) masks, with a live preview
+- **Compare files**: side-by-side diff of two text files
 - **System info**: OS, kernel, CPU, memory and all mounted disks with free/total space
 
 ## Keyboard shortcuts
@@ -52,15 +55,21 @@ A **Total Commander-style dual-pane file manager** with a built-in **utility too
 | Insert / Space | Toggle selection at cursor |
 | Ctrl+Click | Add to selection |
 | Shift+Click | Range selection |
-| Double-click | Enter folder / open file with system app |
+| Press + Drag | Range selection with the mouse |
+| Drag to other pane | Copy / move the dragged files (choose on drop) |
+| Double-click | Enter folder / view file |
 | F3 | View file (read-only) |
 | F4 | Edit file |
 | F5 | Copy to opposite panel |
 | F6 | Move to opposite panel |
 | Shift+F6 | Rename |
 | F7 | New folder |
-| F8 / Delete | Delete selection |
+| F8 / Delete | Move selection to the Trash |
 | Ctrl+S | Save file in editor |
+| Ctrl+N | New empty file |
+| Ctrl+T / Ctrl+W | New / close folder tab |
+| Ctrl+F | Focus the folder filter |
+| Alt+Left / Right | Back / forward in folder history |
 | Esc | Close dialog |
 
 ## Build
@@ -72,6 +81,14 @@ cargo build --release
 ```
 
 The binary is written to `target/release/rust-commander` (`rust-commander.exe` on Windows).
+
+## Tests
+
+```sh
+cargo test
+```
+
+Besides unit tests for the file operations and tools, this runs headless UI tests (`src/app_tests.rs`): the real interface driven by simulated mouse events, with no window. They cover drag-and-drop, range selection and the pane layout.
 
 Run it directly during development:
 
@@ -86,7 +103,7 @@ cargo run --release
   ```sh
   xattr -cr "Rust Commander.app"
   ```
-- **Delete is permanent** (no recycle bin) - the confirmation dialog exists for a reason.
+- **Deletes go to the Trash** by default. *Delete permanently* (in the delete dialog and the right-click menu) is immediate and cannot be undone.
 
 ## CI / Releases
 

@@ -51,6 +51,38 @@ struct SortClick {
     flip: bool,
 }
 
+/// A mouse press that began on a file row and is still held. Inside its own
+/// pane it keeps range-selecting rows; once the pointer enters the other pane
+/// it turns into a copy/move of `items` (see `settle_row_drag`).
+struct RowDrag {
+    from: usize,
+    /// The pointer has entered the other pane: this is a drop now.
+    committed: bool,
+    items: Vec<FileEntry>,
+}
+
+/// The row under the pointer in the drop pane during the current frame.
+struct DropRow {
+    pane: usize,
+    path: PathBuf,
+    is_dir: bool,
+    rect: egui::Rect,
+}
+
+/// Size the Copy / Move menu is drawn at (used to keep it inside the window).
+const DROP_MENU_WIDTH: f32 = 320.0;
+const DROP_MENU_HEIGHT: f32 = 190.0;
+
+/// Copy / Move chooser shown where a drag (or an OS file drop) was released.
+struct DropMenu {
+    items: Vec<FileEntry>,
+    target: PathBuf,
+    pos: egui::Pos2,
+    /// Input time (seconds) the menu opened at; clicks right at that moment
+    /// (the release that ended the drag) don't close it.
+    opened: f64,
+}
+
 /// Short-lived notification shown in the bottom-right corner.
 struct Toast {
     at: Instant,
@@ -68,6 +100,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+Click", "Add to / remove from selection"),
     ("Shift+Click", "Range selection"),
     ("Press + Drag", "Range selection with the mouse"),
+    ("Drag to other pane", "Copy / move the dragged rows (choose on drop)"),
     ("Double-click", "Enter folder / view file in the built-in viewer"),
     ("F3", "View file (read-only)"),
     ("F4", "Edit file"),
@@ -97,6 +130,12 @@ pub struct CommanderApp {
     bookmarks: Vec<Bookmark>,
     /// Focus the active pane's filter box on the next frame (Ctrl+F).
     focus_filter: bool,
+    /// Row press-drag in progress.
+    row_drag: Option<RowDrag>,
+    drop_menu: Option<DropMenu>,
+    /// Screen rects of the two panes, updated every frame.
+    pane_rects: [egui::Rect; 2],
+    drop_row: Option<DropRow>,
     jobs: Vec<Job>,
     modal: Option<Modal>,
     toolbox: Toolbox,
@@ -153,6 +192,10 @@ impl CommanderApp {
             dir_sizes: std::collections::HashMap::new(),
             bookmarks: prefs.bookmarks,
             focus_filter: false,
+            row_drag: None,
+            drop_menu: None,
+            pane_rects: [egui::Rect::NOTHING; 2],
+            drop_row: None,
             jobs: Vec::new(),
             modal: None,
             toolbox: Toolbox::default(),
@@ -454,13 +497,24 @@ impl CommanderApp {
 
     fn start_transfer(&mut self, kind: JobKind, target: String) {
         let items = self.op_items();
-        let dst = PathBuf::from(target.trim());
+        self.start_transfer_items(kind, items, PathBuf::from(target.trim()));
+    }
+
+    /// Copy or move `items` (the selection, a drag, or dropped files) into
+    /// the folder `dst`. Entries already in `dst` are left alone.
+    fn start_transfer_items(&mut self, kind: JobKind, items: Vec<FileEntry>, dst: PathBuf) {
         if items.is_empty() {
             self.toast("Nothing selected", true);
             return;
         }
         if !dst.is_dir() {
             self.toast("Target folder does not exist", true);
+            return;
+        }
+        let in_target = |e: &FileEntry| e.path.parent().is_some_and(|p| same_folder(p, &dst));
+        let items: Vec<FileEntry> = items.into_iter().filter(|e| !in_target(e)).collect();
+        if items.is_empty() {
+            self.toast("Those are already in this folder", true);
             return;
         }
         let total = items.len() as u64;
@@ -784,7 +838,9 @@ impl CommanderApp {
         }
 
         let typing = ctx.wants_keyboard_input();
-        let modal_open = self.modal.is_some();
+        // The drop menu behaves like a dialog: keys must not reach the file
+        // panels behind it (Enter would open a file).
+        let modal_open = self.modal.is_some() || self.drop_menu.is_some();
 
         if !modal_open {
             if ctx.input(|i| i.key_pressed(egui::Key::F5)) {
@@ -1096,6 +1152,201 @@ impl CommanderApp {
         });
     }
 
+    /// Advance the row drag in progress, if any. Called once per frame, after
+    /// both panes have been drawn: the drag is committed to a copy/move when
+    /// the pointer enters the other pane, and the drop menu opens when it is
+    /// released there.
+    fn settle_row_drag(&mut self, ctx: &egui::Context) {
+        let Some(from) = self.row_drag.as_ref().map(|d| d.from) else {
+            return;
+        };
+        let held = ctx.input(|i| i.pointer.primary_down());
+        let pos = ctx.input(|i| i.pointer.latest_pos());
+        let over_other = pos
+            .and_then(|p| self.pane_rects.iter().position(|r| r.contains(p)))
+            .filter(|pane| *pane != from);
+
+        if !held {
+            let committed = self.row_drag.as_ref().is_some_and(|d| d.committed);
+            if let (true, Some(pane)) = (committed, over_other) {
+                if let Some(drag) = self.row_drag.take() {
+                    self.finish_drop(ctx, drag.items, pane, pos);
+                }
+            }
+            self.row_drag = None;
+        } else if over_other.is_some() && !self.row_drag.as_ref().is_some_and(|d| d.committed) {
+            self.commit_row_drag();
+        }
+    }
+
+    /// Turn the row drag into a drop: the carried entries become the source
+    /// pane's selection, and range selection pauses until the button is
+    /// released.
+    fn commit_row_drag(&mut self) {
+        let Some(from) = self.row_drag.as_ref().map(|d| d.from) else {
+            return;
+        };
+        let src = self.panes[from].cur();
+        let items = if src.sweep_kept_base && src.drag_from.is_some() {
+            // Started on a selected row: carry what was selected.
+            src.entries_matching(&src.sweep_base)
+        } else if let Some(e) = src
+            .drag_from
+            .or(src.press_row)
+            .and_then(|vi| src.visible.get(vi))
+            .map(|&ei| src.entries[ei].clone())
+        {
+            // Started on an unselected row: carry that row, unless a modifier
+            // kept an existing selection containing it.
+            let carried = src.selected.clone();
+            if src.drag_from.is_none() && carried.contains(&e.path) {
+                src.entries_matching(&carried)
+            } else {
+                vec![e]
+            }
+        } else {
+            src.entries_matching(&src.selected)
+        };
+        src.selected = items.iter().map(|e| e.path.clone()).collect();
+        src.drag_from = None;
+        src.sweep_locked = true;
+        if let Some(d) = &mut self.row_drag {
+            d.committed = true;
+            d.items = items;
+        }
+    }
+
+    /// A drag (or an OS file drop) was released over pane `pane`. Shift means
+    /// move and Ctrl / Command means copy; otherwise the menu asks.
+    fn finish_drop(
+        &mut self,
+        ctx: &egui::Context,
+        items: Vec<FileEntry>,
+        pane: usize,
+        pos: Option<egui::Pos2>,
+    ) {
+        if self.modal.is_some() {
+            self.toast("Close the dialog before copying or moving files", true);
+            return;
+        }
+        let target = match &self.drop_row {
+            Some(row) if row.pane == pane && row.is_dir => row.path.clone(),
+            _ => self.panes[pane].cur().path.clone(),
+        };
+        let mods = ctx.input(|i| i.modifiers);
+        let direct = if mods.shift {
+            Some(JobKind::Move)
+        } else if mods.ctrl || mods.command {
+            Some(JobKind::Copy)
+        } else {
+            None
+        };
+        match direct {
+            Some(kind) => self.start_transfer_items(kind, items, target),
+            None => {
+                let screen = ctx.screen_rect();
+                let pos = pos.unwrap_or_else(|| self.pane_rects[pane].center());
+                // Open at the pointer, but not past the window's edge.
+                let pos = egui::pos2(
+                    pos.x.min(screen.right() - DROP_MENU_WIDTH - 8.0),
+                    pos.y.min(screen.bottom() - DROP_MENU_HEIGHT - 8.0),
+                );
+                self.drop_menu = Some(DropMenu {
+                    items,
+                    target,
+                    pos,
+                    opened: ctx.input(|i| i.time),
+                });
+            }
+        }
+    }
+
+    /// The Copy / Move menu shown at the pointer after a drop.
+    fn show_drop_menu(&mut self, ctx: &egui::Context) {
+        let Some(menu) = &self.drop_menu else {
+            return;
+        };
+        let (items, target) = (menu.items.clone(), menu.target.clone());
+        let mut action = None;
+        let mut close = false;
+        let area = egui::Area::new(egui::Id::new("drop_menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(menu.pos)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_width(DROP_MENU_WIDTH);
+                    ui.label(format!(
+                        "{} item(s) dropped into '{}'",
+                        items.len(),
+                        display_name(&target)
+                    ));
+                    // Wrapped: an unwrapped path would make the menu huge.
+                    ui.add(egui::Label::new(
+                        egui::RichText::new(crate::panel::nfc(&target.display().to_string()))
+                            .weak()
+                            .small(),
+                    ).wrap());
+                    ui.separator();
+                    if ui.button("Copy here").clicked() {
+                        action = Some(JobKind::Copy);
+                    }
+                    if ui.button("Move here").clicked() {
+                        action = Some(JobKind::Move);
+                    }
+                    ui.separator();
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(
+                                "Hold Shift (move) or Ctrl / Command (copy) while dropping to skip this menu.",
+                            )
+                            .weak()
+                            .small(),
+                        )
+                        .wrap(),
+                    );
+                });
+            });
+
+        let settled = ctx.input(|i| i.time) - menu.opened > 0.1;
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape))
+            || (settled && area.response.clicked_elsewhere())
+        {
+            close = true;
+        }
+        if close || action.is_some() {
+            self.drop_menu = None;
+        }
+        if let Some(kind) = action {
+            self.start_transfer_items(kind, items, target);
+        }
+    }
+
+    /// Files dropped from the OS (Finder, Explorer...) onto a pane: offer to
+    /// copy or move them into that pane's folder.
+    fn handle_os_drops(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        if dropped.is_empty() {
+            return;
+        }
+        let items: Vec<FileEntry> = dropped
+            .into_iter()
+            .filter_map(|f| f.path)
+            .filter(|p| p.exists())
+            .map(|p| FileEntry::from_path(&p))
+            .collect();
+        if items.is_empty() {
+            return;
+        }
+        let pos = ctx.input(|i| i.pointer.latest_pos());
+        let pane = pos
+            .and_then(|p| self.pane_rects.iter().position(|r| r.contains(p)))
+            .unwrap_or(self.active);
+        self.finish_drop(ctx, items, pane, pos);
+    }
+
     fn show_status_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -1129,9 +1380,11 @@ impl CommanderApp {
         // Both panes are drawn inside one CentralPanel with a hand-managed
         // split. egui's SidePanel resize state snapped back after dragging
         // (its stored rect is re-derived from the content rect each frame);
-        // owning the width here is deterministic. Children use an explicit
-        // top-down layout: plain allocate_ui would inherit this horizontal
-        // layout and flatten each pane into a single row.
+        // owning the width here is deterministic. Each pane gets an explicit
+        // rectangle and a top-down layout: plain allocate_ui would inherit
+        // the surrounding layout and flatten a pane into a single row.
+        // Only rows hovered during this frame count as drop targets.
+        self.drop_row = None;
         egui::CentralPanel::default().show(ctx, |ui| {
             let avail = ui.available_size();
             let default_w = (avail.x * 0.5).round();
@@ -1140,73 +1393,82 @@ impl CommanderApp {
                 .unwrap_or(default_w)
                 .clamp(320.0, (avail.x - 320.0).max(360.0));
 
-            let top_down = egui::Layout::top_down(egui::Align::Min);
-            ui.horizontal(|ui| {
-                // Children carry explicit id salts: unsalted child UIs all
-                // derive the same id, which made the two panes' tables,
-                // scroll areas and widgets collide (egui's "First/Second
-                // use of Table ID" debug paint).
-                let pane0_rect =
-                    egui::Rect::from_min_size(ui.cursor().min, egui::vec2(width, avail.y));
-                ui.allocate_new_ui(
-                    egui::UiBuilder::new()
-                        .id_salt("pane_left")
-                        .max_rect(pane0_rect)
-                        .layout(top_down),
-                    |ui| self.draw_panel(ui, 0),
-                );
+            let origin = ui.cursor().min;
+            let pane0 = egui::Rect::from_min_size(origin, egui::vec2(width, avail.y));
+            let divider = egui::Rect::from_min_size(
+                egui::pos2(pane0.right(), origin.y),
+                egui::vec2(10.0, avail.y),
+            );
+            let pane1 = egui::Rect::from_min_size(
+                egui::pos2(divider.right(), origin.y),
+                egui::vec2((avail.x - width - 10.0).max(200.0), avail.y),
+            );
+            // The whole allotted panes (not just their content), so a drag
+            // counts as being over a pane anywhere inside it.
+            self.pane_rects = [pane0, pane1];
+            self.show_pane(ui, pane0, 0);
 
-                // Divider: thin line with a generous grab area.
-                let (drect, dresp) =
-                    ui.allocate_exact_size(egui::vec2(10.0, avail.y), egui::Sense::drag());
-                let accent = ui.visuals().selection.stroke.color;
-                let (line_color, line_w) = if dresp.dragged() {
-                    (accent, 2.0_f32)
-                } else if dresp.hovered() {
-                    (accent.gamma_multiply(0.7), 2.0)
-                } else {
-                    (ui.visuals().widgets.noninteractive.bg_stroke.color, 1.0)
-                };
-                let x = drect.center().x;
-                ui.painter().line_segment(
-                    [
-                        egui::pos2(x, drect.top() + 6.0),
-                        egui::pos2(x, drect.bottom() - 6.0),
-                    ],
-                    egui::Stroke::new(line_w, line_color),
-                );
-                if dresp.hovered() || dresp.dragged() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            // Divider: thin line with a generous grab area.
+            let drect = divider;
+            let dresp = ui.allocate_rect(drect, egui::Sense::drag());
+            let accent = ui.visuals().selection.stroke.color;
+            let (line_color, line_w) = if dresp.dragged() {
+                (accent, 2.0_f32)
+            } else if dresp.hovered() {
+                (accent.gamma_multiply(0.7), 2.0)
+            } else {
+                (ui.visuals().widgets.noninteractive.bg_stroke.color, 1.0)
+            };
+            let x = drect.center().x;
+            ui.painter().line_segment(
+                [
+                    egui::pos2(x, drect.top() + 6.0),
+                    egui::pos2(x, drect.bottom() - 6.0),
+                ],
+                egui::Stroke::new(line_w, line_color),
+            );
+            if dresp.hovered() || dresp.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
+            if dresp.double_clicked() {
+                width = default_w;
+            }
+            if dresp.dragged() {
+                if let Some(p) = dresp.interact_pointer_pos() {
+                    // Pane 0 starts where the divider region begins minus
+                    // its current width.
+                    let pane0_left = drect.left() - width;
+                    width = (p.x - pane0_left)
+                        .clamp(320.0, (avail.x - 320.0).max(360.0));
                 }
-                if dresp.double_clicked() {
-                    width = default_w;
-                }
-                if dresp.dragged() {
-                    if let Some(p) = dresp.interact_pointer_pos() {
-                        // Pane 0 starts where the divider region begins minus
-                        // its current width.
-                        let pane0_left = drect.left() - width;
-                        width = (p.x - pane0_left)
-                            .clamp(320.0, (avail.x - 320.0).max(360.0));
-                    }
-                }
+            }
 
-                let rest = (ui.max_rect().right() - ui.cursor().min.x).max(200.0);
-                let pane1_rect =
-                    egui::Rect::from_min_size(ui.cursor().min, egui::vec2(rest, avail.y));
-                ui.allocate_new_ui(
-                    egui::UiBuilder::new()
-                        .id_salt("pane_right")
-                        .max_rect(pane1_rect)
-                        .layout(top_down),
-                    |ui| self.draw_panel(ui, 1),
-                );
-            });
+            self.show_pane(ui, pane1, 1);
 
+            self.settle_row_drag(ui.ctx());
             self.pane_width = Some(width);
         });
     }
 
+
+    /// Draw pane `idx` inside `rect`, claiming only the space the pane was
+    /// allotted. The file table registers invisible column-resize handles just
+    /// past its last column; counting those made every pane slightly wider
+    /// than its share, which nudged the divider and squeezed the other pane.
+    fn show_pane(&mut self, ui: &mut egui::Ui, rect: egui::Rect, idx: usize) {
+        // Child carries an explicit id salt: unsalted child UIs all derive
+        // the same id, which made the two panes' tables, scroll areas and
+        // widgets collide (egui's "First/Second use of Table ID" paint).
+        let mut pane = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(if idx == 0 { "pane_left" } else { "pane_right" })
+                .max_rect(rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        self.draw_panel(&mut pane, idx);
+        let used = pane.min_rect().intersect(rect);
+        ui.allocate_rect(used, egui::Sense::hover());
+    }
 
     fn draw_panel(&mut self, ui: &mut egui::Ui, idx: usize) {
         let active = self.active == idx;
@@ -1238,6 +1500,12 @@ impl CommanderApp {
         let term_dir = RefCell::new(None::<PathBuf>);
         let add_bm = Cell::new(false);
         let sizes_dirs = RefCell::new(None::<Vec<PathBuf>>);
+        // Drag-and-drop scratch for this pane's table pass: the row under
+        // the pointer while a drag from the other pane is over this pane, and
+        // whether a press began on one of this pane's rows.
+        let drop_here = RefCell::new(None::<(PathBuf, bool, egui::Rect)>);
+        let drop_target = self.row_drag.as_ref().is_some_and(|d| d.from != idx);
+        let drag_began = Cell::new(false);
 
         egui::Frame::default()
             .stroke(stroke)
@@ -1306,10 +1574,12 @@ impl CommanderApp {
 
                 // Editable path bar.
                 ui.horizontal(|ui| {
-                    let resp = ui.add(
-                        egui::TextEdit::singleline(&mut p.path_edit)
-                            .hint_text("Enter a folder path...")
-                            .desired_width(ui.available_width() - 50.0),
+                    let resp = field_edit(
+                        ui,
+                        (idx, "path"),
+                        &mut p.path_edit,
+                        ui.available_width() - 50.0,
+                        "Enter a folder path...",
                     );
                     let go = ui.button("Go").clicked()
                         || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
@@ -1408,12 +1678,7 @@ impl CommanderApp {
                     if want_filter_focus {
                         self.focus_filter = false;
                     }
-                    let fresp = ui.add(
-                        egui::TextEdit::singleline(&mut p.filter)
-                            .hint_text("Filter")
-                            .desired_width(110.0)
-                            .id_salt(format!("filter_{}", idx)),
-                    );
+                    let fresp = field_edit(ui, (idx, "filter"), &mut p.filter, 110.0, "Filter");
                     if want_filter_focus && idx == self.active {
                         fresp.request_focus();
                     }
@@ -1537,7 +1802,18 @@ impl CommanderApp {
                                             r.union(catcher)
                                         })
                                         .inner;
-                                    drag_select(ui, p, vi, &path);
+                                    cell_press(
+                                        ui,
+                                        p,
+                                        vi,
+                                        &path,
+                                        is_dir,
+                                        &r,
+                                        self.row_drag.is_some(),
+                                        drop_target,
+                                        &drop_here,
+                                        &drag_began,
+                                    );
                                     if r.clicked() {
                                         clicked.set(true);
                                         let mods = ui.input(|i| i.modifiers);
@@ -1656,7 +1932,18 @@ impl CommanderApp {
                                             r.union(catcher)
                                         })
                                         .inner;
-                                    drag_select(ui, p, vi, &path);
+                                    cell_press(
+                                        ui,
+                                        p,
+                                        vi,
+                                        &path,
+                                        is_dir,
+                                        &r,
+                                        self.row_drag.is_some(),
+                                        drop_target,
+                                        &drop_here,
+                                        &drag_began,
+                                    );
                                     if r.clicked() {
                                         p.selected.clear();
                                         p.selected.insert(path.clone());
@@ -1677,7 +1964,18 @@ impl CommanderApp {
                                             r.union(catcher)
                                         })
                                         .inner;
-                                    drag_select(ui, p, vi, &path);
+                                    cell_press(
+                                        ui,
+                                        p,
+                                        vi,
+                                        &path,
+                                        is_dir,
+                                        &r,
+                                        self.row_drag.is_some(),
+                                        drop_target,
+                                        &drop_here,
+                                        &drag_began,
+                                    );
                                     if r.clicked() {
                                         p.selected.clear();
                                         p.selected.insert(path.clone());
@@ -1703,7 +2001,18 @@ impl CommanderApp {
                                             r.union(catcher)
                                         })
                                         .inner;
-                                    drag_select(ui, p, vi, &path);
+                                    cell_press(
+                                        ui,
+                                        p,
+                                        vi,
+                                        &path,
+                                        is_dir,
+                                        &r,
+                                        self.row_drag.is_some(),
+                                        drop_target,
+                                        &drop_here,
+                                        &drag_began,
+                                    );
                                     if r.clicked() {
                                         p.selected.clear();
                                         p.selected.insert(path.clone());
@@ -1712,7 +2021,49 @@ impl CommanderApp {
                                 });
                             });
                         }
+
+                        // Sweeping near the list's top or bottom edge scrolls
+                        // it, so a drag can reach rows beyond the visible ones.
+                        if p.drag_from.is_some() {
+                            let list = body.ui_mut();
+                            let clip = list.clip_rect();
+                            if let Some(pos) = list.input(|i| i.pointer.latest_pos()) {
+                                let near_edge = |edge: f32| (pos.y - edge).abs() <= 28.0;
+                                let step = if near_edge(clip.bottom()) {
+                                    -16.0
+                                } else if near_edge(clip.top()) {
+                                    16.0
+                                } else {
+                                    0.0
+                                };
+                                if step != 0.0 && pos.x >= clip.left() && pos.x <= clip.right() {
+                                    list.scroll_with_delta_animation(
+                                        egui::vec2(0.0, step),
+                                        egui::style::ScrollAnimation::none(),
+                                    );
+                                    list.ctx().request_repaint();
+                                }
+                            }
+                        }
                     });
+
+                // A press that began on one of this pane's rows starts a row
+                // drag (it becomes a copy/move if it reaches the other pane).
+                if drag_began.get() && self.row_drag.is_none() {
+                    self.row_drag = Some(RowDrag {
+                        from: idx,
+                        committed: false,
+                        items: Vec::new(),
+                    });
+                }
+                if let Some((path, is_dir, rect)) = drop_here.borrow_mut().take() {
+                    self.drop_row = Some(DropRow {
+                        pane: idx,
+                        path,
+                        is_dir,
+                        rect,
+                    });
+                }
 
                 // Press-drag multi-select ends when the button is released.
                 if p.drag_from.is_some() && !ui.input(|i| i.pointer.primary_down()) {
@@ -1760,6 +2111,58 @@ impl CommanderApp {
                     );
                 }
             });
+
+        // Drop highlight: a drag from the other pane is over this pane.
+        if self
+            .row_drag
+            .as_ref()
+            .is_some_and(|d| d.committed && d.from != idx)
+            && ui.rect_contains_pointer(ui.max_rect())
+        {
+            let rect = ui.max_rect();
+            let accent = ui.visuals().selection.stroke.color;
+            ui.painter().rect_filled(rect, 6.0, accent.gamma_multiply(0.10));
+            ui.painter()
+                .rect_stroke(rect, 6.0, egui::Stroke::new(3.0_f32, accent));
+
+            // A folder row under the pointer is the destination itself.
+            let into = match &self.drop_row {
+                Some(row) if row.pane == idx && row.is_dir => {
+                    ui.painter()
+                        .rect_stroke(row.rect, 3.0, egui::Stroke::new(2.0_f32, accent));
+                    Some(row.path.clone())
+                }
+                _ => None,
+            };
+            let count = self.row_drag.as_ref().map_or(0, |d| d.items.len());
+            let caption = match into {
+                Some(folder) => format!(
+                    "Drop to copy or move {} item(s) into '{}'",
+                    count,
+                    display_name(&folder)
+                ),
+                None => format!("Drop to copy or move {} item(s)", count),
+            };
+            let text_color = ui.visuals().strong_text_color();
+            let galley = ui
+                .painter()
+                .layout(
+                    caption,
+                    egui::FontId::proportional(15.0),
+                    text_color,
+                    f32::INFINITY,
+                );
+            let box_rect = egui::Rect::from_center_size(
+                rect.center(),
+                galley.size() + 2.0 * egui::vec2(14.0, 10.0),
+            );
+            ui.painter()
+                .rect_filled(box_rect, 6.0, ui.visuals().window_fill());
+            ui.painter()
+                .rect_stroke(box_rect, 6.0, egui::Stroke::new(1.0_f32, accent));
+            ui.painter()
+                .galley(box_rect.center() - galley.size() / 2.0, galley, text_color);
+        }
 
         // Apply deferred actions collected while drawing (they need `self`,
         // which was borrowed by the frame closures above).
@@ -2364,11 +2767,21 @@ impl eframe::App for CommanderApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.tick(ctx);
+    }
+}
+
+impl CommanderApp {
+    /// Render one frame. Shared by the eframe app and the headless UI tests
+    /// (which have no eframe window to drive).
+    fn tick(&mut self, ctx: &egui::Context) {
         self.poll_jobs(ctx);
+        self.handle_os_drops(ctx);
         self.handle_keys(ctx);
         self.show_top_bar(ctx);
         self.show_status_bar(ctx);
         self.show_panels(ctx);
+        self.show_drop_menu(ctx);
         self.show_modal(ctx);
         self.show_toolbox(ctx);
         self.show_viewer(ctx);
@@ -2376,6 +2789,10 @@ impl eframe::App for CommanderApp {
         self.show_toasts(ctx);
     }
 }
+
+#[cfg(test)]
+#[path = "app_tests.rs"]
+mod tests;
 
 /// Sortable table header button; returns true when clicked.
 fn sort_header(ui: &mut egui::Ui, label: &str, current: SortKey, key: SortKey, ascending: bool) -> bool {
@@ -2426,28 +2843,128 @@ fn icon_button(ui: &mut egui::Ui, icon: &'static str, enabled: bool, tip: &str) 
     resp.clicked()
 }
 
-/// Press-drag multi-select for one table row: a plain (unmodified) press
-/// anchors a row and selects it; while the button stays held, every row the
-/// pointer passes over extends the selection to the anchored range. The drag
-/// ends on release (cleared by `draw_panel` after the table pass).
-fn drag_select(ui: &mut egui::Ui, p: &mut FilePanel, vi: usize, path: &std::path::Path) {
-    let primary_down = ui.input(|i| i.pointer.primary_down());
-    let unmodified = !ui.input(|i| i.modifiers.any());
+/// A single-line text field that claims only its own rectangle. Left alone,
+/// `TextEdit` also lays an invisible strip beside the field for text that
+/// doesn't fit (so a scroll area could follow the caret); that strip advances
+/// the row and pushes whatever follows — "Go" after the path bar, "Hidden"
+/// after the filter — away, out of the pane for long paths or narrow panes.
+fn field_edit(
+    ui: &mut egui::Ui,
+    id_salt: impl std::hash::Hash,
+    text: &mut String,
+    width: f32,
+    hint: &str,
+) -> egui::Response {
+    // The extra 8px is TextEdit's default side margin. The height is left
+    // generous: only the field's own extent gets claimed.
+    let rect = egui::Rect::from_min_size(
+        ui.cursor().min,
+        egui::vec2(width + 8.0, ui.spacing().interact_size.y + 16.0),
+    );
+    let mut field = ui.new_child(egui::UiBuilder::new().id_salt(id_salt).max_rect(rect));
+    let resp = field.add(
+        egui::TextEdit::singleline(text)
+            .hint_text(hint)
+            .desired_width(width),
+    );
+    ui.allocate_rect(field.min_rect().intersect(rect), egui::Sense::hover());
+    resp
+}
+
+/// Per-cell glue around [`row_press`] for one table row. While a drag from
+/// the other pane is over this pane (`target`), the row under the pointer is
+/// remembered as the drop destination.
+#[allow(clippy::too_many_arguments)]
+fn cell_press(
+    ui: &mut egui::Ui,
+    p: &mut FilePanel,
+    vi: usize,
+    path: &Path,
+    is_dir: bool,
+    r: &egui::Response,
+    row_drag: bool,
+    target: bool,
+    target_row: &RefCell<Option<(PathBuf, bool, egui::Rect)>>,
+    began: &Cell<bool>,
+) {
+    if target && ui.rect_contains_pointer(ui.max_rect()) {
+        target_row
+            .borrow_mut()
+            .replace((path.to_path_buf(), is_dir, ui.max_rect()));
+    }
+    let started = row_press(ui, p, vi, path, r.rect, row_drag);
+    began.set(began.get() || started);
+}
+
+/// Mouse handling for one table row.
+///
+/// A press that begins on the row (reported once through the return value)
+/// starts a row drag: inside its own pane it keeps range-selecting, and it
+/// turns into a copy/move once the pointer enters the other pane. A plain
+/// press anchors a range selection that every row the pointer passes extends;
+/// anchoring on an already-selected row extends the existing selection
+/// instead of replacing it. With Ctrl / Shift held at the press nothing is
+/// selected, so the drag carries the selection unchanged.
+fn row_press(
+    ui: &mut egui::Ui,
+    p: &mut FilePanel,
+    vi: usize,
+    path: &Path,
+    rect: egui::Rect,
+    row_drag: bool,
+) -> bool {
+    if !ui.input(|i| i.pointer.primary_down()) {
+        p.press_row = None;
+        p.sweep_locked = false;
+        return false;
+    }
+
+    let mut began = false;
+    if p.press_row.is_none()
+        && ui.input(|i| i.pointer.press_origin()).is_some_and(|o| rect.contains(o))
+    {
+        p.press_row = Some(vi);
+        began = true;
+    }
+
+    if p.sweep_locked {
+        return began;
+    }
     let hovered = ui.rect_contains_pointer(ui.max_rect());
-    if primary_down && unmodified && p.drag_from.is_none() && hovered {
-        p.drag_from = Some(vi);
-        p.selected.clear();
-        p.selected.insert(path.to_path_buf());
-        p.cursor = vi;
-    } else if let Some(from) = p.drag_from {
-        if primary_down && hovered {
-            let (lo, hi) = (from.min(vi), from.max(vi));
-            p.selected.clear();
+    let unmodified = !ui.input(|i| i.modifiers.any());
+    if let Some(anchor) = p.drag_from {
+        if hovered {
+            p.selected = p.sweep_base.clone();
+            let (lo, hi) = (anchor.min(vi), anchor.max(vi));
             for k in lo..=hi {
-                p.selected.insert(p.entries[p.visible[k]].path.clone());
+                if let Some(&ei) = p.visible.get(k) {
+                    p.selected.insert(p.entries[ei].path.clone());
+                }
             }
             p.cursor = vi;
         }
+    } else if unmodified && hovered && (began || !row_drag) {
+        // `!row_drag` keeps a press that began on empty space selecting from
+        // the first row it sweeps into; a press that began on a row of the
+        // other pane must not select here.
+        p.drag_from = Some(vi);
+        p.sweep_kept_base = p.selected.contains(path);
+        if !p.sweep_kept_base {
+            p.selected.clear();
+            p.selected.insert(path.to_path_buf());
+        }
+        p.sweep_base = p.selected.clone();
+        p.cursor = vi;
+    }
+    began
+}
+
+/// Whether two paths denote the same folder (compared through canonical
+/// paths, so aliases like `/var` and `/private/var` match).
+fn same_folder(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
     }
 }
 
