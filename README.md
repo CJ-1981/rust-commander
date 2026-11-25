@@ -125,8 +125,8 @@ Each CI run also runs the test suite on macOS and on Windows. Artifacts are atta
 Releases are fully automated - one command publishes new binaries:
 
 ```sh
-git tag v0.1.8
-git push origin v0.1.2
+git tag v0.1.9
+git push origin v0.1.9
 ```
 
 The pipeline then builds all three targets, packages them (macOS `.app` bundles with an auto-generated icon, Windows zip), and creates the GitHub Release with the binaries attached. The version inside the macOS bundle metadata is synced automatically from the pushed tag.
