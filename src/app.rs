@@ -116,6 +116,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("F7", "New folder"),
     ("F8 / Delete", "Move selection to Trash"),
     ("Ctrl+S", "Save file in the editor"),
+    ("Tab (in the editor)", "Indent the line or selection (Shift+Tab removes the indentation)"),
     ("Ctrl+T", "New folder tab"),
     ("Ctrl+W", "Close folder tab"),
     ("Ctrl+N", "New empty file"),
@@ -844,10 +845,13 @@ impl CommanderApp {
         // it switches the active pane and leaves the field. egui has its own
         // idea of Tab (walk the keyboard focus through the widgets, starting
         // with the toolbar), so its focus is handed back at the end of the
-        // frame.
-        if ctx.input(|i| i.key_pressed(egui::Key::Tab)) {
+        // frame. Two places keep the usual meaning: in the editor Tab indents,
+        // and inside a dialog it moves between the dialog's controls.
+        let editor_focused = self.viewer.as_ref().is_some_and(|v| v.editing)
+            && ctx.memory(|m| m.has_focus(crate::viewer::editor_id()));
+        if !modal_open && !editor_focused && ctx.input(|i| i.key_pressed(egui::Key::Tab)) {
             self.tab_release = TAB_RELEASE_FRAMES;
-            if !modal_open && ctx.input(|i| !i.modifiers.ctrl && !i.modifiers.alt) {
+            if ctx.input(|i| !i.modifiers.ctrl && !i.modifiers.alt) {
                 self.switch_pane();
             }
         }
@@ -2708,7 +2712,12 @@ impl CommanderApp {
         if let Some(v) = self.viewer.as_mut() {
             dirty = v.dirty;
             let title = format!("{}{}", if v.dirty { "* " } else { "" }, v.name);
+            // The window keeps one identity whatever its title: egui identifies
+            // a window by its title, so the "* " marker appearing on the first
+            // edit made this a new window and the editor lost the keyboard
+            // focus after one typed character.
             egui::Window::new(title)
+                .id(egui::Id::new("viewer_window"))
                 .open(&mut open)
                 .default_size([880.0, 560.0])
                 .show(ctx, |ui| v.ui(ui));

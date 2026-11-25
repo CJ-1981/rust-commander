@@ -68,6 +68,7 @@ A **Total Commander-style dual-pane file manager** with a built-in **utility too
 | F7 | New folder |
 | F8 / Delete | Move selection to the Trash |
 | Ctrl+S | Save file in editor |
+| Tab (in the editor) | Indent the line or selection; Shift+Tab removes the indentation |
 | Ctrl+N | New empty file |
 | Ctrl+T / Ctrl+W | New / close folder tab |
 | Ctrl+F | Focus the folder filter |
@@ -117,7 +118,7 @@ GitHub Actions (`.github/workflows/ci.yml`) builds release binaries on every pus
 | `aarch64-apple-darwin` | `macos-latest` | `RustCommander-macos-arm64.zip` (`.app` bundle) |
 | `x86_64-apple-darwin` | `macos-latest` | `RustCommander-macos-x64.zip` (`.app` bundle) |
 
-Artifacts are attached to every CI run; pushing a tag like `v0.1.0` additionally publishes a GitHub Release with all three artifacts attached.
+Each CI run also runs the test suite on macOS and on Windows. Artifacts are attached to every CI run; pushing a tag like `v0.1.0` additionally publishes a GitHub Release with all three artifacts attached (the upload is retried, and the run fails if fewer than three files end up on the release).
 
 ### Cut a new release
 

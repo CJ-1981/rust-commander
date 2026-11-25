@@ -773,22 +773,15 @@ fn only_two_quick_clicks_on_the_same_row_count_as_a_double_click() {
     );
 }
 
-#[test]
-fn while_editing_arrows_belong_to_the_text_and_tab_switches_panes() {
-    let scratch = Scratch::new("keys-editor");
-    for name in ["alpha.txt", "beta.txt", "gamma.txt"] {
-        let contents = format!("{name}\nsecond line\n");
-        scratch.write(scratch.src().join(name), &contents);
-    }
-    let mut h = harness(&scratch.src(), &scratch.dst());
-    click_row(&mut h, "beta.txt", egui::Modifiers::NONE);
+/// Open the file under the cursor in the editor (F4) and click into it.
+/// Returns whether the editor ended up with the keyboard focus.
+fn open_editor(h: &mut AppHarness) {
+    key(h, egui::Key::F4, egui::Modifiers::NONE);
     h.run();
-
-    // F4 opens the file under the cursor for editing.
-    key(&mut h, egui::Key::F4, egui::Modifiers::NONE);
-    h.run();
-    assert!(h.state().viewer.as_ref().is_some_and(|v| v.editing && v.name == "beta.txt"));
-
+    assert!(
+        h.state().viewer.as_ref().is_some_and(|v| v.editing),
+        "F4 opened the file for editing"
+    );
     let editor = h
         .query_all(
             egui_kittest::kittest::By::new()
@@ -800,25 +793,98 @@ fn while_editing_arrows_belong_to_the_text_and_tab_switches_panes() {
         .raw_bounds()
         .expect("editor has bounds");
     click_at(
-        &mut h,
-        egui::pos2(((editor.x0 + editor.x1) / 2.0) as f32, (editor.y0 + 10.0) as f32),
+        h,
+        // Below the first line, in the empty part of the field: the caret
+        // goes to the end of the text.
+        egui::pos2((editor.x0 + 20.0) as f32, ((editor.y0 + editor.y1) / 2.0) as f32),
         egui::Modifiers::NONE,
     );
     h.run();
+}
+
+fn editor_text(h: &AppHarness) -> String {
+    h.state().viewer.as_ref().map(|v| v.text.clone()).unwrap_or_default()
+}
+
+#[test]
+fn while_editing_the_arrow_keys_belong_to_the_text() {
+    let scratch = Scratch::new("keys-editor");
+    for name in ["alpha.txt", "beta.txt", "gamma.txt"] {
+        scratch.write(scratch.src().join(name), "line\n");
+    }
+    let mut h = harness(&scratch.src(), &scratch.dst());
+    click_row(&mut h, "beta.txt", egui::Modifiers::NONE);
+    h.run();
+    open_editor(&mut h);
     assert!(h.ctx.wants_keyboard_input(), "clicking the editor gives it focus");
 
     // The arrow keys move the text caret, not the file cursor.
     key(&mut h, egui::Key::ArrowDown, egui::Modifiers::NONE);
     assert_eq!(h.state().panes[0].cur_ref().cursor, 1);
     assert!(h.ctx.wants_keyboard_input(), "still editing");
+}
 
-    // Tab leaves the editor and switches panes; the editor stays open.
+#[test]
+fn typing_in_the_editor_keeps_the_editing_focus() {
+    let scratch = Scratch::new("keys-editor-typing");
+    scratch.write(scratch.src().join("notes.txt"), "line one\nline two\n");
+    let mut h = harness(&scratch.src(), &scratch.dst());
+    open_editor(&mut h);
+
+    // The first edit puts the "* " marker into the window title. The window
+    // used to become a different window then, and the editor lost the focus,
+    // so only one character could ever be typed at a time.
+    for c in ["x", "y", "z"] {
+        h.input_mut().events.push(egui::Event::Text(c.to_string()));
+        h.step();
+        h.run();
+        assert!(h.ctx.wants_keyboard_input(), "still editing after typing '{c}'");
+    }
+    assert_eq!(editor_text(&h), "line one\nline two\nxyz");
+}
+
+#[test]
+fn tab_in_the_editor_indents_and_does_not_switch_panes() {
+    let scratch = Scratch::new("keys-editor-tab");
+    scratch.write(scratch.src().join("notes.txt"), "line one\nline two\n");
+    let mut h = harness(&scratch.src(), &scratch.dst());
+    open_editor(&mut h);
+
+    key(&mut h, egui::Key::Tab, egui::Modifiers::NONE);
+    h.run();
+    assert_eq!(editor_text(&h), "line one\nline two\n\t");
+    assert!(h.ctx.wants_keyboard_input(), "the editor keeps the focus");
+    assert_eq!(h.state().active, 0, "Tab did not switch panes");
+    assert!(h.state().viewer.as_ref().is_some_and(|v| v.dirty), "the edit counts as a change");
+
+    // Shift+Tab takes the indentation back out.
+    key(&mut h, egui::Key::Tab, egui::Modifiers::SHIFT);
+    h.run();
+    assert_eq!(editor_text(&h), "line one\nline two\n");
+    assert!(h.ctx.wants_keyboard_input(), "still editing");
+
+    // Leaving the editor (Escape returns the keys to the panels), Tab
+    // switches panes as usual.
+    key(&mut h, egui::Key::Escape, egui::Modifiers::NONE);
+    h.run();
+    key(&mut h, egui::Key::Tab, egui::Modifiers::NONE);
+    h.run();
+    assert_eq!(h.state().active, 1);
+}
+
+#[test]
+fn tab_inside_a_dialog_moves_between_its_controls_and_leaves_the_panes_alone() {
+    let (_scratch, mut h) = keyboard_harness("keys-tab-dialog");
+    key(&mut h, egui::Key::F7, egui::Modifiers::NONE);
+    h.run();
+    assert!(h.state().modal.is_some(), "F7 opened the new-folder dialog");
+
     key(&mut h, egui::Key::Tab, egui::Modifiers::NONE);
     h.run();
     h.run();
-    assert_eq!(h.state().active, 1);
-    assert!(!h.ctx.wants_keyboard_input(), "no widget keeps the focus");
-    assert!(h.state().viewer.is_some(), "the editor is still open");
+
+    assert_eq!(h.state().active, 0, "Tab in a dialog does not switch panes");
+    assert!(h.state().modal.is_some(), "the dialog is still open");
 }
 
 #[test]
@@ -908,3 +974,4 @@ fn table_columns_fit_their_content_and_fill_the_pane() {
     let ext = h.get_all_by_label("Ext").next().expect("column header").raw_bounds().expect("bounds");
     assert!(left.right() - (ext.x1 as f32) < 30.0);
 }
+

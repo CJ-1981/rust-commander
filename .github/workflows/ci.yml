@@ -31,7 +31,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -49,6 +49,10 @@ jobs:
 
       - name: Build (release)
         run: cargo build --release --target ${{ matrix.target }}
+
+      # Headless UI and unit tests, on each OS the app is built for.
+      - name: Test
+        run: cargo test
 
       - name: Generate macOS icon (ICNS)
         if: runner.os == 'macOS'
@@ -108,16 +112,42 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
+      - name: Fetch this run's build archives
+        run: |
+          mkdir -p dist
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir dist --pattern 'RustCommander-*'
+          # Each artifact lands in a folder of its own; keep the archives.
+          find dist -mindepth 2 -name '*.zip' -exec mv {} dist/ \;
+          find dist -mindepth 1 -type d -empty -delete
+          ls -la dist
+          test "$(find dist -name '*.zip' | wc -l)" -eq 3
 
-      - name: Attach artifacts to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*.zip
-          generate_release_notes: true
+      - name: Attach the archives to the release, then check all three are there
+        run: |
+          # Uploading once stopped half-way (v0.1.4 was published with two of
+          # its three files), so it is retried and the result is checked.
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+                 --title "$TAG" --generate-notes
+          uploaded=false
+          for attempt in 1 2 3 4 5; do
+            if gh release upload "$TAG" dist/*.zip --repo "$GITHUB_REPOSITORY" --clobber; then
+              uploaded=true
+              break
+            fi
+            echo "Upload attempt $attempt failed; retrying in 15 s"
+            sleep 15
+          done
+          if [ "$uploaded" != true ]; then
+            echo "Uploading the archives kept failing"
+            exit 1
+          fi
+          count=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')
+          echo "Files on the release: $count"
+          test "$count" -eq 3
