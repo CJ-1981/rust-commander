@@ -53,6 +53,7 @@ fn app_in(src: &Path, dst: &Path) -> CommanderApp {
         bookmarks: Vec::new(),
         focus_filter: false,
         row_drag: None,
+        tab_release: 0,
         drop_menu: None,
         pane_rects: [egui::Rect::NOTHING; 2],
         drop_row: None,
@@ -531,4 +532,379 @@ fn dropping_files_into_the_folder_they_are_in_does_nothing() {
         std::fs::read_to_string(scratch.src().join("alpha.txt")).unwrap(),
         "alpha"
     );
+}
+
+
+// ------------------------------------------------------------ keyboard
+
+/// Press `key` with `modifiers` held.
+fn key(harness: &mut AppHarness, key: egui::Key, modifiers: egui::Modifiers) {
+    for pressed in [true, false] {
+        // The app reads held modifiers from the keyboard state.
+        harness.input_mut().modifiers = modifiers;
+        harness.input_mut().events.push(egui::Event::Key {
+            key,
+            pressed,
+            modifiers,
+            repeat: false,
+            physical_key: None,
+        });
+        harness.step();
+    }
+}
+
+fn click_at(harness: &mut AppHarness, pos: egui::Pos2, modifiers: egui::Modifiers) {
+    pointer_moved(harness, pos);
+    // The app reads held modifiers from the keyboard state.
+    harness.input_mut().modifiers = modifiers;
+    harness.step();
+    for pressed in [true, false] {
+        harness.input_mut().modifiers = modifiers;
+        harness.input_mut().events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers,
+        });
+        harness.step();
+    }
+}
+
+/// Names of the rows shown highlighted in pane `pane`: the selection plus
+/// the cursor row.
+fn highlighted(harness: &AppHarness, pane: usize) -> Vec<String> {
+    let panel = harness.state().panes[pane].cur_ref();
+    let mut names: Vec<String> = panel
+        .visible
+        .iter()
+        .enumerate()
+        .filter(|(vi, &ei)| panel.cursor == *vi || panel.selected.contains(&panel.entries[ei].path))
+        .map(|(_, &ei)| panel.entries[ei].name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+fn click_row(harness: &mut AppHarness, label: &str, modifiers: egui::Modifiers) {
+    let at = center_of(harness, label, 0);
+    click_at(harness, at, modifiers);
+}
+
+/// An app listing a few files, with the left pane active.
+fn keyboard_harness(tag: &str) -> (Scratch, AppHarness) {
+    let scratch = Scratch::new(tag);
+    for name in ["alpha.txt", "beta.txt", "gamma.txt", "zeta.txt"] {
+        scratch.write(scratch.src().join(name), name);
+    }
+    let harness = harness(&scratch.src(), &scratch.dst());
+    (scratch, harness)
+}
+
+#[test]
+fn tab_switches_panels_without_moving_focus_onto_toolbar_buttons() {
+    let (_scratch, mut h) = keyboard_harness("keys-tab");
+
+    let mut expect = 1;
+    for _ in 0..6 {
+        key(&mut h, egui::Key::Tab, egui::Modifiers::NONE);
+        h.run();
+        assert_eq!(h.state().active, expect, "Tab switches the active pane");
+        assert!(
+            !h.ctx.wants_keyboard_input(),
+            "no widget keeps the keyboard focus afterwards"
+        );
+        expect = 1 - expect;
+    }
+}
+
+#[test]
+fn tab_while_typing_in_the_path_bar_leaves_the_field_and_switches() {
+    let scratch = Scratch::new("keys-tab-typing");
+    scratch.write(scratch.src().join("alpha.txt"), "alpha");
+    let mut h = harness(&scratch.src(), &scratch.dst());
+
+    let shown = crate::panel::nfc(&std::fs::canonicalize(scratch.src()).unwrap().display().to_string());
+    // The field and its text node both carry the path as their value.
+    let field = h
+        .get_all_by_value(shown.as_str())
+        .next()
+        .expect("the path field shows the folder")
+        .raw_bounds()
+        .expect("path field has bounds");
+    click_at(&mut h, egui::pos2((field.x0 + 40.0) as f32, ((field.y0 + field.y1) / 2.0) as f32), egui::Modifiers::NONE);
+    h.run();
+    assert!(h.ctx.wants_keyboard_input(), "the path field has focus");
+
+    key(&mut h, egui::Key::Tab, egui::Modifiers::NONE);
+    h.run();
+    h.run();
+
+    assert_eq!(h.state().active, 1, "Tab switched the pane");
+    assert!(!h.ctx.wants_keyboard_input(), "the field lost focus");
+}
+
+#[test]
+fn plain_arrow_keys_move_a_single_highlight() {
+    let (_scratch, mut h) = keyboard_harness("keys-plain");
+    click_row(&mut h, "beta.txt", egui::Modifiers::NONE);
+    h.run();
+    assert_eq!(highlighted(&h, 0), ["beta.txt"]);
+
+    key(&mut h, egui::Key::ArrowDown, egui::Modifiers::NONE);
+    assert_eq!(highlighted(&h, 0), ["gamma.txt"], "one highlight, on the cursor row");
+
+    key(&mut h, egui::Key::ArrowUp, egui::Modifiers::NONE);
+    key(&mut h, egui::Key::ArrowUp, egui::Modifiers::NONE);
+    assert_eq!(highlighted(&h, 0), ["alpha.txt"]);
+
+    key(&mut h, egui::Key::End, egui::Modifiers::NONE);
+    assert_eq!(highlighted(&h, 0), ["zeta.txt"]);
+}
+
+#[test]
+fn shift_arrow_keys_extend_the_selection_from_where_it_started() {
+    let (_scratch, mut h) = keyboard_harness("keys-shift");
+    click_row(&mut h, "beta.txt", egui::Modifiers::NONE);
+    h.run();
+
+    let shift = egui::Modifiers::SHIFT;
+    key(&mut h, egui::Key::ArrowDown, shift);
+    assert_eq!(highlighted(&h, 0), ["beta.txt", "gamma.txt"]);
+    key(&mut h, egui::Key::ArrowDown, shift);
+    assert_eq!(highlighted(&h, 0), ["beta.txt", "gamma.txt", "zeta.txt"]);
+
+    // Back up over the start: the selection follows the cursor, the start
+    // stays put.
+    for _ in 0..3 {
+        key(&mut h, egui::Key::ArrowUp, shift);
+    }
+    assert_eq!(highlighted(&h, 0), ["alpha.txt", "beta.txt"]);
+
+    key(&mut h, egui::Key::ArrowDown, egui::Modifiers::NONE);
+    assert_eq!(
+        highlighted(&h, 0),
+        ["beta.txt"],
+        "a plain arrow key collapses the selection back to one row"
+    );
+}
+
+#[test]
+fn shift_click_extends_from_the_row_the_selection_started_at() {
+    let (_scratch, mut h) = keyboard_harness("keys-shift-click");
+    click_row(&mut h, "beta.txt", egui::Modifiers::NONE);
+    h.run();
+
+    click_row(&mut h, "zeta.txt", egui::Modifiers::SHIFT);
+    assert_eq!(highlighted(&h, 0), ["beta.txt", "gamma.txt", "zeta.txt"]);
+
+    // The start of the selection is still beta.
+    click_row(&mut h, "alpha.txt", egui::Modifiers::SHIFT);
+    assert_eq!(highlighted(&h, 0), ["alpha.txt", "beta.txt"]);
+}
+
+#[test]
+fn the_divider_drags_all_the_way_to_the_left() {
+    let scratch = Scratch::new("divider-left");
+    scratch.write(scratch.src().join("alpha.txt"), "alpha");
+    let mut h = harness_sized(egui::vec2(1280.0, 800.0), &scratch.src(), &scratch.dst());
+
+    let [left, _right] = h.state().pane_rects;
+    let y = left.center().y;
+    let mut x = left.right() + 5.0;
+    pointer_moved(&mut h, egui::pos2(x, y));
+    button(&mut h, egui::pos2(x, y), true);
+
+    // Sweep left in steps; the left pane must keep following the pointer.
+    while x > 120.0 {
+        x -= 20.0;
+        pointer_moved(&mut h, egui::pos2(x, y));
+        h.step();
+        let width = h.state().pane_rects[0].width();
+        assert!(
+            width <= (x - left.left()).max(320.0) + 1.0,
+            "at pointer x={:.0} the left pane is still {:.0} wide",
+            x,
+            width
+        );
+    }
+    button(&mut h, egui::pos2(x, y), false);
+    h.run();
+
+    let [left, right] = h.state().pane_rects;
+    assert_eq!(left.width(), 320.0, "the left pane can shrink to its minimum");
+    assert!((right.left() - left.right() - 10.0).abs() < 0.5, "the panes stay adjacent");
+
+    // Everything the narrow pane draws stays inside it.
+    for label in ["Go", "Hidden", "Ext"] {
+        let r = h.get_all_by_label(label).next().expect("left pane control").raw_bounds().expect("bounds");
+        assert!(
+            (r.x1 as f32) <= left.right() + 0.5,
+            "the left pane's {} ends at {:.0}, outside the pane ({:.0})",
+            label,
+            r.x1,
+            left.right()
+        );
+    }
+}
+
+
+
+
+
+
+#[test]
+fn only_two_quick_clicks_on_the_same_row_count_as_a_double_click() {
+    let (_scratch, mut h) = keyboard_harness("keys-double-click");
+
+    // Clicking quickly from one row to the next just selects.
+    click_row(&mut h, "beta.txt", egui::Modifiers::NONE);
+    click_row(&mut h, "gamma.txt", egui::Modifiers::NONE);
+    assert!(
+        h.state().viewer.is_none(),
+        "a quick second click on another row must not open it"
+    );
+    assert_eq!(highlighted(&h, 0), ["gamma.txt"]);
+
+    // Two clicks on the same row open it.
+    click_row(&mut h, "gamma.txt", egui::Modifiers::NONE);
+    assert_eq!(
+        h.state().viewer.as_ref().map(|v| v.name.clone()),
+        Some("gamma.txt".to_string())
+    );
+}
+
+#[test]
+fn while_editing_arrows_belong_to_the_text_and_tab_switches_panes() {
+    let scratch = Scratch::new("keys-editor");
+    for name in ["alpha.txt", "beta.txt", "gamma.txt"] {
+        let contents = format!("{name}\nsecond line\n");
+        scratch.write(scratch.src().join(name), &contents);
+    }
+    let mut h = harness(&scratch.src(), &scratch.dst());
+    click_row(&mut h, "beta.txt", egui::Modifiers::NONE);
+    h.run();
+
+    // F4 opens the file under the cursor for editing.
+    key(&mut h, egui::Key::F4, egui::Modifiers::NONE);
+    h.run();
+    assert!(h.state().viewer.as_ref().is_some_and(|v| v.editing && v.name == "beta.txt"));
+
+    let editor = h
+        .query_all(
+            egui_kittest::kittest::By::new()
+                .role(egui::accesskit::Role::MultilineTextInput)
+                .recursive(true),
+        )
+        .next()
+        .expect("the editor is a multiline text input")
+        .raw_bounds()
+        .expect("editor has bounds");
+    click_at(
+        &mut h,
+        egui::pos2(((editor.x0 + editor.x1) / 2.0) as f32, (editor.y0 + 10.0) as f32),
+        egui::Modifiers::NONE,
+    );
+    h.run();
+    assert!(h.ctx.wants_keyboard_input(), "clicking the editor gives it focus");
+
+    // The arrow keys move the text caret, not the file cursor.
+    key(&mut h, egui::Key::ArrowDown, egui::Modifiers::NONE);
+    assert_eq!(h.state().panes[0].cur_ref().cursor, 1);
+    assert!(h.ctx.wants_keyboard_input(), "still editing");
+
+    // Tab leaves the editor and switches panes; the editor stays open.
+    key(&mut h, egui::Key::Tab, egui::Modifiers::NONE);
+    h.run();
+    h.run();
+    assert_eq!(h.state().active, 1);
+    assert!(!h.ctx.wants_keyboard_input(), "no widget keeps the focus");
+    assert!(h.state().viewer.is_some(), "the editor is still open");
+}
+
+#[test]
+fn the_table_fills_the_pane_whichever_way_the_divider_moves() {
+    let scratch = Scratch::new("divider-both-ways");
+    scratch.write(scratch.src().join("alpha.txt"), "alpha");
+    let mut h = harness_sized(egui::vec2(1280.0, 800.0), &scratch.src(), &scratch.dst());
+
+    // Where the left pane's last column ends, relative to its pane.
+    let last_column_gap = |h: &AppHarness| {
+        let left = h.state().pane_rects[0];
+        let ext = h.get_all_by_label("Ext").next().expect("column header").raw_bounds().expect("bounds");
+        left.right() - ext.x1 as f32
+    };
+
+    let gap_before = last_column_gap(&h);
+    assert!(gap_before < 30.0, "initially the table fills the pane (gap {:.0})", gap_before);
+
+    let y = h.state().pane_rects[0].center().y;
+    let drag_to = |h: &mut AppHarness, from: f32, to: f32| {
+        pointer_moved(h, egui::pos2(from, y));
+        button(h, egui::pos2(from, y), true);
+        let mut x = from;
+        while (x - to).abs() > 0.5 {
+            // Steps of at most 20px, so the last one lands on the target.
+            x += (to - x).signum() * (to - x).abs().min(20.0);
+            pointer_moved(h, egui::pos2(x, y));
+        }
+        pointer_moved(h, egui::pos2(to, y));
+        button(h, egui::pos2(to, y), false);
+        h.run();
+        h.run();
+    };
+
+    // Widen the left pane a lot.
+    let divider_at = h.state().pane_rects[0].right() + 5.0;
+    drag_to(&mut h, divider_at, 1000.0);
+    let wide = h.state().pane_rects[0].width();
+    assert!(wide > 900.0, "the divider moved right (left pane {:.0})", wide);
+    let gap = last_column_gap(&h);
+    assert!(gap < 30.0, "the table grew with the pane (gap {:.0})", gap);
+
+    // Then shrink it to its minimum.
+    let divider_at = h.state().pane_rects[0].right() + 5.0;
+    drag_to(&mut h, divider_at, 100.0);
+    let narrow = h.state().pane_rects[0].width();
+    assert_eq!(narrow, 320.0);
+    let gap = last_column_gap(&h);
+    assert!((-0.5..=30.0).contains(&gap), "the table shrank with the pane (gap {:.0})", gap);
+}
+
+#[test]
+fn table_columns_fit_their_content_and_fill_the_pane() {
+    let scratch = Scratch::new("table-columns");
+    for name in ["budget.xlsx", "CHANGELOG.md", "config.json", "notes.txt"] {
+        let c = name.to_string();
+        scratch.write(scratch.src().join(name), &c);
+    }
+    let mut h = harness_sized(egui::vec2(1180.0, 620.0), &scratch.src(), &scratch.dst());
+    for _ in 0..4 {
+        h.step();
+    }
+
+    // A column sizes itself to its content. If the content wrapped, the
+    // column would come out too narrow for it and the dates would be split
+    // over two lines.
+    let dates: Vec<_> = h
+        .query_all(
+            egui_kittest::kittest::By::new()
+                .label_contains("2026-")
+                .recursive(true),
+        )
+        .collect();
+    assert!(!dates.is_empty(), "the listing shows modification dates");
+    for date in dates {
+        let r = date.raw_bounds().expect("date cell has bounds");
+        assert!(
+            r.y1 - r.y0 <= 20.0,
+            "the date {:?} is on one line ({:.0} tall)",
+            date.label(),
+            r.y1 - r.y0
+        );
+    }
+
+    // The table reaches the right edge of its pane.
+    let left = h.state().pane_rects[0];
+    let ext = h.get_all_by_label("Ext").next().expect("column header").raw_bounds().expect("bounds");
+    assert!(left.right() - (ext.x1 as f32) < 30.0);
 }

@@ -14,7 +14,7 @@ A **Total Commander-style dual-pane file manager** with a built-in **utility too
 
 - Two independent directory panels with an active-panel highlight
 - Single click selects, Ctrl+Click adds to the selection, Shift+Click selects a range, Insert/Space toggles selection at the cursor
-- Sort by name, size, modification date or extension - click the column headers
+- Sort by name, size, modification date or extension - click the column headers. The name column fills the pane; the Size column can be dragged wider
 - Editable path bar, Home button, drive/volume picker (Windows drive letters, macOS `/Volumes`), refresh, hidden-file toggle
 - Per-pane **folder tabs**: `+` opens a tab at the current folder, `Ctrl+T`/`Ctrl+W` add/close, double-click or right-click a tab to rename it; tabs survive restarts
 - **Safer file operations**: deletes go to the Trash (permanent option available), and copying/moving onto existing files asks — Overwrite, Skip, or remember the choice for the rest of the batch
@@ -49,7 +49,9 @@ A **Total Commander-style dual-pane file manager** with a built-in **utility too
 | --- | --- |
 | Tab | Switch active panel |
 | Up / Down | Move cursor |
+| Shift + Up / Down | Extend the selection |
 | Home / End | First / last entry |
+| Shift + Home / End | Extend the selection to the first / last entry |
 | Enter | Open folder / view file |
 | Backspace | Go to parent folder |
 | Insert / Space | Toggle selection at cursor |

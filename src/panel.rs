@@ -90,7 +90,18 @@ pub struct FilePanel {
     /// Range selection is suspended until the button is released (set once a
     /// drag has turned into a drop into the other pane).
     pub sweep_locked: bool,
+    /// Row (index into `visible`) a range selection starts from: the row of
+    /// the last plain click or arrow-key move. Cleared when the rows are
+    /// re-sorted or the folder changes.
+    pub anchor: Option<usize>,
+    /// The row clicked last, and when. A second click on that same row within
+    /// the double-click interval opens it.
+    pub last_click: Option<(PathBuf, f64)>,
 }
+
+/// Seconds within which a second click on the same row counts as a
+/// double-click.
+pub const DOUBLE_CLICK_SECS: f64 = 0.35;
 
 impl FilePanel {
     pub fn new(start: PathBuf) -> Self {
@@ -115,6 +126,8 @@ impl FilePanel {
             sweep_kept_base: false,
             press_row: None,
             sweep_locked: false,
+            anchor: None,
+            last_click: None,
         };
         p.set_path(start);
         p
@@ -146,6 +159,8 @@ impl FilePanel {
         self.cursor = 0;
         self.selected.clear();
         self.drag_from = None;
+        self.anchor = None;
+        self.last_click = None;
         self.reload();
     }
 
@@ -269,6 +284,8 @@ impl FilePanel {
         });
         self.visible = idx;
         self.drag_from = None;
+        self.anchor = None;
+        self.last_click = None;
         self.scroll_needed = true;
         if self.cursor >= self.visible.len() {
             self.cursor = self.visible.len().saturating_sub(1);
@@ -277,6 +294,76 @@ impl FilePanel {
 
     pub fn visible_entry(&self, vis_idx: usize) -> Option<&FileEntry> {
         self.visible.get(vis_idx).map(|&i| &self.entries[i])
+    }
+
+    /// Path of the row at visible index `vi`, if it is within the listing.
+    fn row_path(&self, vi: usize) -> Option<PathBuf> {
+        self.visible.get(vi).map(|&ei| self.entries[ei].path.clone())
+    }
+
+    /// Select only row `vi` and put the cursor there. The row becomes the
+    /// start of the next range selection. Does nothing if `vi` is out of range.
+    pub fn select_only(&mut self, vi: usize) {
+        if let Some(path) = self.row_path(vi) {
+            self.selected.clear();
+            self.selected.insert(path);
+            self.cursor = vi;
+            self.anchor = Some(vi);
+        }
+    }
+
+    /// Select the rows from the selection's start to row `vi` and move the
+    /// cursor there. The start is the row of the last plain click or arrow-key
+    /// move, or the cursor if there is none yet.
+    pub fn extend_to(&mut self, vi: usize) {
+        if self.row_path(vi).is_none() {
+            return;
+        }
+        let start = self.anchor.unwrap_or(self.cursor);
+        self.selected.clear();
+        for k in start.min(vi)..=start.max(vi) {
+            if let Some(path) = self.row_path(k) {
+                self.selected.insert(path);
+            }
+        }
+        self.cursor = vi;
+    }
+
+    /// Move the cursor by `delta` rows. With `extend`, the rows from the
+    /// selection's start to the new cursor position are selected; without it
+    /// the selection collapses onto the cursor.
+    pub fn move_cursor(&mut self, delta: i32, extend: bool) {
+        if self.visible.is_empty() {
+            return;
+        }
+        let last = self.visible.len() as i32 - 1;
+        let target = (self.cursor as i32 + delta).clamp(0, last) as usize;
+        self.go_to(target, extend);
+    }
+
+    /// Put the cursor on row `vi`, selecting as in [`Self::move_cursor`].
+    pub fn go_to(&mut self, vi: usize, extend: bool) {
+        if extend {
+            self.extend_to(vi);
+        } else {
+            self.select_only(vi);
+        }
+        self.scroll_needed = true;
+    }
+
+    /// Register a plain click on `path` at time `now` (seconds). Returns true
+    /// when this is the second click on that same row within the
+    /// double-click interval. egui's own detection is not tied to a widget, so
+    /// two quick clicks on different rows would otherwise open the second one.
+    pub fn clicked_at(&mut self, path: &Path, now: f64) -> bool {
+        let again = matches!(&self.last_click,
+            Some((clicked, at)) if clicked == path && now - *at <= DOUBLE_CLICK_SECS);
+        self.last_click = if again {
+            None
+        } else {
+            Some((path.to_path_buf(), now))
+        };
+        again
     }
 
     /// Counts over the visible listing: (dirs, files, total bytes of files).
@@ -384,6 +471,9 @@ pub fn fmt_time(t: Option<SystemTime>) -> String {
 pub struct Pane {
     pub tabs: Vec<FilePanel>,
     pub active: usize,
+    /// The tab clicked last, and when: a second click on the same tab within
+    /// the double-click interval renames it.
+    last_tab_click: Option<(usize, f64)>,
 }
 
 impl Pane {
@@ -391,6 +481,7 @@ impl Pane {
         Self {
             tabs: vec![FilePanel::new(start)],
             active: 0,
+            last_tab_click: None,
         }
     }
 
@@ -424,6 +515,21 @@ impl Pane {
         } else if idx < self.active {
             self.active -= 1;
         }
+    }
+
+    /// Register a click on tab `ti` at time `now` (seconds). Returns true when
+    /// this is the second click on that same tab within the double-click
+    /// interval (egui's own detection would also fire for a quick click on a
+    /// different tab).
+    pub fn tab_clicked_at(&mut self, ti: usize, now: f64) -> bool {
+        let again = matches!(&self.last_tab_click,
+            Some((clicked, at)) if *clicked == ti && now - *at <= DOUBLE_CLICK_SECS);
+        self.last_tab_click = if again {
+            None
+        } else {
+            Some((ti, now))
+        };
+        again
     }
 
     /// Label shown on a tab: the user's name if set, else the folder name.

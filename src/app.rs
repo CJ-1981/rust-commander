@@ -69,6 +69,10 @@ struct DropRow {
     rect: egui::Rect,
 }
 
+/// How many frames egui's widget focus is handed back after a Tab. The
+/// focus it moves can land one frame later.
+const TAB_RELEASE_FRAMES: u8 = 3;
+
 /// Size the Copy / Move menu is drawn at (used to keep it inside the window).
 const DROP_MENU_WIDTH: f32 = 320.0;
 const DROP_MENU_HEIGHT: f32 = 190.0;
@@ -93,7 +97,9 @@ struct Toast {
 const SHORTCUTS: &[(&str, &str)] = &[
     ("Tab", "Switch active panel"),
     ("Up / Down", "Move cursor"),
+    ("Shift + Up / Down", "Extend the selection"),
     ("Home / End", "First / last entry"),
+    ("Shift + Home / End", "Extend the selection to the first / last entry"),
     ("Enter", "Open folder / view file"),
     ("Backspace", "Go to parent folder"),
     ("Insert / Space", "Toggle selection at cursor"),
@@ -132,6 +138,8 @@ pub struct CommanderApp {
     focus_filter: bool,
     /// Row press-drag in progress.
     row_drag: Option<RowDrag>,
+    /// Frames left in which to hand egui's widget focus back after a Tab.
+    tab_release: u8,
     drop_menu: Option<DropMenu>,
     /// Screen rects of the two panes, updated every frame.
     pane_rects: [egui::Rect; 2],
@@ -193,6 +201,7 @@ impl CommanderApp {
             bookmarks: prefs.bookmarks,
             focus_filter: false,
             row_drag: None,
+            tab_release: 0,
             drop_menu: None,
             pane_rects: [egui::Rect::NOTHING; 2],
             drop_row: None,
@@ -317,27 +326,16 @@ impl CommanderApp {
                 .position(|&vi| &p.entries[vi].path == path)
             {
                 p.cursor = vi;
+                p.anchor = Some(vi);
                 p.scroll_needed = true;
             }
         }
     }
 
-    fn move_cursor(&mut self, delta: i32) {
-        let p = self.panes[self.active].cur();
-        if p.visible.is_empty() {
-            return;
-        }
-        let cur = p.cursor as i32 + delta;
-        p.cursor = cur.clamp(0, p.visible.len() as i32 - 1) as usize;
-        p.scroll_needed = true;
-    }
-
-    fn set_cursor(&mut self, idx: usize) {
-        let p = self.panes[self.active].cur();
-        if !p.visible.is_empty() {
-            p.cursor = idx.min(p.visible.len() - 1);
-            p.scroll_needed = true;
-        }
+    /// Switch the active pane and bring its cursor into view.
+    fn switch_pane(&mut self) {
+        self.active = 1 - self.active;
+        self.panes[self.active].cur().scroll_needed = true;
     }
 
     fn toggle_select_cursor(&mut self) {
@@ -842,6 +840,18 @@ impl CommanderApp {
         // panels behind it (Enter would open a file).
         let modal_open = self.modal.is_some() || self.drop_menu.is_some();
 
+        // Tab belongs to the panels, even while a text field is being edited:
+        // it switches the active pane and leaves the field. egui has its own
+        // idea of Tab (walk the keyboard focus through the widgets, starting
+        // with the toolbar), so its focus is handed back at the end of the
+        // frame.
+        if ctx.input(|i| i.key_pressed(egui::Key::Tab)) {
+            self.tab_release = TAB_RELEASE_FRAMES;
+            if !modal_open && ctx.input(|i| !i.modifiers.ctrl && !i.modifiers.alt) {
+                self.switch_pane();
+            }
+        }
+
         if !modal_open {
             if ctx.input(|i| i.key_pressed(egui::Key::F5)) {
                 self.open_copy_modal();
@@ -907,8 +917,7 @@ impl CommanderApp {
                 self.focus_filter = true;
             }
 
-            let (tab, up, down, enter, back, ins, space, del, home, end) = ctx.input(|i| (
-                i.key_pressed(egui::Key::Tab),
+            let (up, down, enter, back, ins, space, del, home, end) = ctx.input(|i| (
                 i.key_pressed(egui::Key::ArrowUp),
                 i.key_pressed(egui::Key::ArrowDown),
                 i.key_pressed(egui::Key::Enter),
@@ -919,24 +928,22 @@ impl CommanderApp {
                 i.key_pressed(egui::Key::Home),
                 i.key_pressed(egui::Key::End),
             ));
-            if tab {
-                self.active = 1 - self.active;
-                // Bring the newly active pane's cursor into view.
-                self.panes[self.active].cur().scroll_needed = true;
-            }
+            // Arrow keys move a single highlight; with Shift held they grow
+            // (or shrink) a selection that starts where the cursor was.
+            let extend = ctx.input(|i| i.modifiers.shift);
             if up {
-                self.move_cursor(-1);
+                self.panes[self.active].cur().move_cursor(-1, extend);
             }
             if down {
-                self.move_cursor(1);
+                self.panes[self.active].cur().move_cursor(1, extend);
             }
             if home {
-                self.set_cursor(0);
+                self.panes[self.active].cur().go_to(0, extend);
             }
             if end {
                 let len = self.panes[self.active].cur().visible.len();
                 if len > 0 {
-                    self.set_cursor(len - 1);
+                    self.panes[self.active].cur().go_to(len - 1, extend);
                 }
             }
             if enter {
@@ -1507,12 +1514,29 @@ impl CommanderApp {
         let drop_target = self.row_drag.as_ref().is_some_and(|d| d.from != idx);
         let drag_began = Cell::new(false);
 
-        egui::Frame::default()
-            .stroke(stroke)
-            .fill(fill)
-            .rounding(6.0)
-            .inner_margin(egui::Margin::same(8.0))
-            .show(ui, |ui| {
+        // The pane's box is the whole rectangle it was allotted: it keeps its
+        // shape however short the listing or narrow the pane, and nothing in
+        // the pane paints outside it. (Around the content, a narrow pane's box
+        // stopped at the width of its toolbar.)
+        let box_rect = ui.max_rect();
+        let painter = ui.painter();
+        painter.rect_filled(box_rect, 6.0, fill);
+        painter.rect_stroke(box_rect.shrink(1.0), 6.0, stroke);
+        ui.shrink_clip_rect(box_rect.expand(2.0));
+        let mut content = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(if idx == 0 {
+                    "pane_left_content"
+                } else {
+                    "pane_right_content"
+                })
+                .max_rect(box_rect.shrink2(egui::vec2(8.0, 8.0)))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        ui.allocate_rect(box_rect, egui::Sense::hover());
+        {
+                let ui = &mut content;
+
                 let pane = &mut self.panes[idx];
 
                 // Folder tab strip.
@@ -1530,16 +1554,18 @@ impl CommanderApp {
                                 }
                             });
                         if r.clicked() {
+                            let now = ui.input(|i| i.time);
                             pane.active = ti;
                             clicked.set(true);
+                            // Only a second click on the same tab renames it.
+                            if pane.tab_clicked_at(ti, now) {
+                                tab_rename.borrow_mut().replace(ti);
+                            }
                         }
                         if r.clicked_by(egui::PointerButton::Middle)
                             && pane.tabs.len() > 1
                         {
                             close_tab = Some(ti);
-                        }
-                        if r.double_clicked() {
-                            tab_rename.borrow_mut().replace(ti);
                         }
                         r.context_menu(|ui| {
                             clicked.set(true);
@@ -1594,8 +1620,9 @@ impl CommanderApp {
                     }
                 });
 
-                // Panel toolbar.
-                ui.horizontal(|ui| {
+                // Panel toolbar. It wraps, so a narrow pane keeps every
+                // control reachable instead of pushing some out of the pane.
+                ui.horizontal_wrapped(|ui| {
                     if ui
                         .add_enabled(!p.back.is_empty(), egui::Button::new("←"))
                         .on_hover_text("Back (Alt+←)")
@@ -1707,7 +1734,12 @@ impl CommanderApp {
                 TableBuilder::new(ui)
                     .striped(true)
                     .vscroll(true)
-                    .column(Column::remainder().clip(true).resizable(true))
+                    // The name column takes whatever width is left, so the
+                    // table always fits the pane and follows the divider. (A
+                    // resizable remainder column keeps its first width, which
+                    // left a gap in wide panes and pushed columns out of
+                    // narrow ones.)
+                    .column(Column::remainder().clip(true).resizable(false))
                     .column(Column::auto().resizable(true))
                     .column(Column::auto())
                     .column(Column::auto())
@@ -1768,10 +1800,14 @@ impl CommanderApp {
                             };
 
                             body.row(20.0, |mut row| {
-                                row.set_selected(is_sel || is_cur);
+                                // The cursor row of the inactive pane is
+                                // shaded below instead of highlighted like a
+                                // selection, so it doesn't read as one.
+                                row.set_selected(is_sel || (is_cur && active));
 
                                 // Name cell (primary interaction).
                                 row.col(|ui| {
+                                    cursor_shade(ui, is_cur && !is_sel && !active);
                                     // Keep the keyboard cursor visible while
                                     // navigating with the arrow keys — only
                                     // on cursor moves, so wheel scrolling is
@@ -1786,22 +1822,21 @@ impl CommanderApp {
                                     } else {
                                         txt
                                     };
-                                    // Selectable label plus an invisible click
-                                    // catcher over the rest of the cell, so the
-                                    // entire line is clickable.
                                     let r = ui
-                                        .horizontal(|ui| {
-                                            let r = ui.selectable_label(is_sel, txt);
-                                            let (_, catcher) = ui.allocate_exact_size(
-                                                egui::vec2(
-                                                    ui.available_width(),
-                                                    ui.available_height(),
-                                                ),
-                                                egui::Sense::click(),
-                                            );
-                                            r.union(catcher)
-                                        })
-                                        .inner;
+                                        // On one line: a column sizes itself to its
+                                        // content, so text that wrapped would leave
+                                        // the column too narrow for it.
+                                        .horizontal(|ui| ui.selectable_label(is_sel, txt))
+                                        .inner
+                                        // The rest of the cell is clickable too. It is
+                                        // registered without claiming space: a full-width
+                                        // widget would count as the column's used width,
+                                        // so the column could never get narrower.
+                                        .union(ui.interact(
+                                            ui.max_rect(),
+                                            ui.id().with("cell_hit"),
+                                            egui::Sense::click(),
+                                        ));
                                     cell_press(
                                         ui,
                                         p,
@@ -1817,6 +1852,14 @@ impl CommanderApp {
                                     if r.clicked() {
                                         clicked.set(true);
                                         let mods = ui.input(|i| i.modifiers);
+                                        // Opening needs a second plain click on
+                                        // this same row in quick succession.
+                                        let opened = if mods.any() {
+                                            p.last_click = None;
+                                            false
+                                        } else {
+                                            p.clicked_at(&path, ui.input(|i| i.time))
+                                        };
                                         if mods.ctrl {
                                             if is_sel {
                                                 p.selected.remove(&path);
@@ -1825,33 +1868,24 @@ impl CommanderApp {
                                             }
                                             p.cursor = vi;
                                         } else if mods.shift {
-                                            let lo = vi.min(p.cursor);
-                                            let hi = vi.max(p.cursor);
-                                            p.selected.clear();
-                                            for k in lo..=hi {
-                                                p.selected
-                                                    .insert(p.entries[p.visible[k]].path.clone());
-                                            }
+                                            p.extend_to(vi);
                                         } else {
-                                            p.selected.clear();
-                                            p.selected.insert(path.clone());
-                                            p.cursor = vi;
+                                            p.select_only(vi);
                                         }
-                                    }
-                                    if r.double_clicked() {
-                                        clicked.set(true);
-                                        if is_dir {
-                                            *nav.borrow_mut() = Some(path.clone());
-                                        } else {
-                                            // Open the built-in viewer, not the
-                                            // system app: launching another app
-                                            // steals focus mid-interaction and
-                                            // kills drag selection. External
-                                            // open stays on the toolbar/context
-                                            // menu (RowAction::View).
-                                            row_action
-                                                .borrow_mut()
-                                                .replace(RowAction::View(path.clone()));
+                                        if opened {
+                                            if is_dir {
+                                                *nav.borrow_mut() = Some(path.clone());
+                                            } else {
+                                                // Open the built-in viewer, not the
+                                                // system app: launching another app
+                                                // steals focus mid-interaction and
+                                                // kills drag selection. External
+                                                // open stays on the toolbar/context
+                                                // menu (RowAction::View).
+                                                row_action
+                                                    .borrow_mut()
+                                                    .replace(RowAction::View(path.clone()));
+                                            }
                                         }
                                     }
                                     // Right-click menu (row actions needing
@@ -1906,6 +1940,7 @@ impl CommanderApp {
                                     });
                                 });
                                 row.col(|ui| {
+                                    cursor_shade(ui, is_cur && !is_sel && !active);
                                     let size_txt = if is_dir {
                                         match self
                                             .dir_sizes
@@ -1920,18 +1955,20 @@ impl CommanderApp {
                                         fmt_size(size)
                                     };
                                     let r = ui
-                                        .horizontal(|ui| {
-                                            let r = ui.selectable_label(is_sel, size_txt);
-                                            let (_, catcher) = ui.allocate_exact_size(
-                                                egui::vec2(
-                                                    ui.available_width(),
-                                                    ui.available_height(),
-                                                ),
-                                                egui::Sense::click(),
-                                            );
-                                            r.union(catcher)
-                                        })
-                                        .inner;
+                                        // On one line: a column sizes itself to its
+                                        // content, so text that wrapped would leave
+                                        // the column too narrow for it.
+                                        .horizontal(|ui| ui.selectable_label(is_sel, size_txt))
+                                        .inner
+                                        // The rest of the cell is clickable too. It is
+                                        // registered without claiming space: a full-width
+                                        // widget would count as the column's used width,
+                                        // so the column could never get narrower.
+                                        .union(ui.interact(
+                                            ui.max_rect(),
+                                            ui.id().with("cell_hit"),
+                                            egui::Sense::click(),
+                                        ));
                                     cell_press(
                                         ui,
                                         p,
@@ -1945,25 +1982,27 @@ impl CommanderApp {
                                         &drag_began,
                                     );
                                     if r.clicked() {
-                                        p.selected.clear();
-                                        p.selected.insert(path.clone());
-                                        p.cursor = vi;
+                                        clicked.set(true);
+                                        p.select_only(vi);
                                     }
                                 });
                                 row.col(|ui| {
+                                    cursor_shade(ui, is_cur && !is_sel && !active);
                                     let r = ui
-                                        .horizontal(|ui| {
-                                            let r = ui.selectable_label(is_sel, fmt_time(modified));
-                                            let (_, catcher) = ui.allocate_exact_size(
-                                                egui::vec2(
-                                                    ui.available_width(),
-                                                    ui.available_height(),
-                                                ),
-                                                egui::Sense::click(),
-                                            );
-                                            r.union(catcher)
-                                        })
-                                        .inner;
+                                        // On one line: a column sizes itself to its
+                                        // content, so text that wrapped would leave
+                                        // the column too narrow for it.
+                                        .horizontal(|ui| ui.selectable_label(is_sel, fmt_time(modified)))
+                                        .inner
+                                        // The rest of the cell is clickable too. It is
+                                        // registered without claiming space: a full-width
+                                        // widget would count as the column's used width,
+                                        // so the column could never get narrower.
+                                        .union(ui.interact(
+                                            ui.max_rect(),
+                                            ui.id().with("cell_hit"),
+                                            egui::Sense::click(),
+                                        ));
                                     cell_press(
                                         ui,
                                         p,
@@ -1977,30 +2016,32 @@ impl CommanderApp {
                                         &drag_began,
                                     );
                                     if r.clicked() {
-                                        p.selected.clear();
-                                        p.selected.insert(path.clone());
-                                        p.cursor = vi;
+                                        clicked.set(true);
+                                        p.select_only(vi);
                                     }
                                 });
                                 row.col(|ui| {
+                                    cursor_shade(ui, is_cur && !is_sel && !active);
                                     let t = if is_dir {
                                         "DIR".to_string()
                                     } else {
                                         ext.clone()
                                     };
                                     let r = ui
-                                        .horizontal(|ui| {
-                                            let r = ui.selectable_label(is_sel, t);
-                                            let (_, catcher) = ui.allocate_exact_size(
-                                                egui::vec2(
-                                                    ui.available_width(),
-                                                    ui.available_height(),
-                                                ),
-                                                egui::Sense::click(),
-                                            );
-                                            r.union(catcher)
-                                        })
-                                        .inner;
+                                        // On one line: a column sizes itself to its
+                                        // content, so text that wrapped would leave
+                                        // the column too narrow for it.
+                                        .horizontal(|ui| ui.selectable_label(is_sel, t))
+                                        .inner
+                                        // The rest of the cell is clickable too. It is
+                                        // registered without claiming space: a full-width
+                                        // widget would count as the column's used width,
+                                        // so the column could never get narrower.
+                                        .union(ui.interact(
+                                            ui.max_rect(),
+                                            ui.id().with("cell_hit"),
+                                            egui::Sense::click(),
+                                        ));
                                     cell_press(
                                         ui,
                                         p,
@@ -2014,9 +2055,8 @@ impl CommanderApp {
                                         &drag_began,
                                     );
                                     if r.clicked() {
-                                        p.selected.clear();
-                                        p.selected.insert(path.clone());
-                                        p.cursor = vi;
+                                        clicked.set(true);
+                                        p.select_only(vi);
                                     }
                                 });
                             });
@@ -2110,7 +2150,7 @@ impl CommanderApp {
                         .weak(),
                     );
                 }
-            });
+        }
 
         // Drop highlight: a drag from the other pane is over this pane.
         if self
@@ -2649,6 +2689,7 @@ impl CommanderApp {
                     .position(|&vi| p.entries[vi].path == file)
                 {
                     p.cursor = vi;
+                    p.anchor = Some(vi);
                     p.selected.insert(file);
                 }
             }
@@ -2787,6 +2828,17 @@ impl CommanderApp {
         self.show_viewer(ctx);
         self.show_help_window(ctx);
         self.show_toasts(ctx);
+
+        // After a Tab, take egui's keyboard focus back off whatever widget it
+        // landed on: a focused button would react to Enter and Space, and the
+        // panels' own keys would be treated as typing.
+        if self.tab_release > 0 {
+            self.tab_release -= 1;
+            let focused = ctx.memory_mut(|m| m.focused());
+            if let Some(id) = focused {
+                ctx.memory_mut(|m| m.surrender_focus(id));
+            }
+        }
     }
 }
 
@@ -2841,6 +2893,16 @@ fn icon_button(ui: &mut egui::Ui, icon: &'static str, enabled: bool, tip: &str) 
         return false;
     }
     resp.clicked()
+}
+
+/// Dim bar marking the cursor row of the pane that is not active. Unlike a
+/// selected row it must not read as part of the selection.
+fn cursor_shade(ui: &mut egui::Ui, show: bool) {
+    if show {
+        let accent = ui.visuals().selection.bg_fill;
+        ui.painter()
+            .rect_filled(ui.max_rect(), 0.0, accent.gamma_multiply(0.35));
+    }
 }
 
 /// A single-line text field that claims only its own rectangle. Left alone,
@@ -2948,6 +3010,7 @@ fn row_press(
         // the first row it sweeps into; a press that began on a row of the
         // other pane must not select here.
         p.drag_from = Some(vi);
+        p.anchor = Some(vi);
         p.sweep_kept_base = p.selected.contains(path);
         if !p.sweep_kept_base {
             p.selected.clear();
