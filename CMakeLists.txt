@@ -29,6 +29,8 @@ add_library(app_core STATIC
     src/panels/FileModel.h
     src/panels/FileProxyModel.cpp
     src/panels/FileProxyModel.h
+    src/panels/FileView.cpp
+    src/panels/FileView.h
 )
 target_link_libraries(app_core PUBLIC Qt6::Widgets Qt6::Concurrent Qt6::Svg)
 target_include_directories(app_core PUBLIC src)
@@ -75,7 +77,7 @@ endif()
 include(CTest)
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
-    set(APP_TESTS filemodel)
+    set(APP_TESTS filemodel fileview)
     foreach(test IN LISTS APP_TESTS)
         add_executable(test_${test} tests/${test}.cpp)
         target_link_libraries(test_${test} PRIVATE app_core Qt6::Test)

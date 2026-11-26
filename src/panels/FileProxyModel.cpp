@@ -55,6 +55,12 @@ const FileEntry *FileProxyModel::entry(const QModelIndex &index) const
     return model && index.isValid() ? model->entry(mapToSource(index).row()) : nullptr;
 }
 
+QString FileProxyModel::folder() const
+{
+    const FileModel *model = fileModel();
+    return model ? model->path() : QString();
+}
+
 bool FileProxyModel::filterAcceptsRow(int sourceRow, const QModelIndex &) const
 {
     const FileModel *model = fileModel();

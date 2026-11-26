@@ -229,4 +229,9 @@ QColor accent()
     return g_colors.accent;
 }
 
+QColor muted()
+{
+    return g_colors.muted;
+}
+
 }  // namespace Theme

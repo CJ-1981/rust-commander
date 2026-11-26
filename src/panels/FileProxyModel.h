@@ -28,6 +28,9 @@ public:
     // The entry behind a proxy index, or nullptr.
     const FileEntry *entry(const QModelIndex &index) const;
 
+    // The folder whose contents are listed; empty before the first listing.
+    QString folder() const;
+
 protected:
     bool filterAcceptsRow(int sourceRow, const QModelIndex &sourceParent) const override;
     bool lessThan(const QModelIndex &left, const QModelIndex &right) const override;

@@ -1,6 +1,3 @@
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
 #include <QMimeData>
 #include <QSignalSpy>
 #include <QStringList>
@@ -8,47 +5,12 @@
 #include <QTest>
 #include <QUrl>
 
-#include <cstring>
 #include <memory>
 
-#include "panels/FileModel.h"
+#include "helpers.h"
 #include "panels/FileProxyModel.h"
 
-#ifdef Q_OS_WIN
-#include <windows.h>
-#endif
-
 namespace {
-
-bool writeFile(const QString &path, const QByteArray &content)
-{
-    QFile file(path);
-    return file.open(QIODevice::WriteOnly) && file.write(content) == content.size();
-}
-
-bool makeFolder(const QString &path)
-{
-    return QDir().mkpath(path);
-}
-
-void setModified(const QString &path, const QDateTime &when)
-{
-    QFile file(path);
-    if (file.open(QIODevice::ReadWrite)) {
-        file.setFileTime(when, QFileDevice::FileModificationTime);
-    }
-}
-
-// Unix hides names that start with a dot; Windows needs the attribute.
-void setHiddenAttribute(const QString &path)
-{
-#ifdef Q_OS_WIN
-    const std::wstring native = path.toStdWString();
-    SetFileAttributesW(native.c_str(), FILE_ATTRIBUTE_HIDDEN);
-#else
-    Q_UNUSED(path);
-#endif
-}
 
 // A folder with a few files and subfolders, as the models' source.
 struct Sample {
@@ -65,33 +27,6 @@ struct Sample {
 
     QString dir;
 };
-
-// Waits until the listing of `model` has arrived; false on timeout.
-bool waitListed(FileModel &model)
-{
-    const qint64 deadline = QDateTime::currentMSecsSinceEpoch() + 15000;
-    while (model.isLoading() && QDateTime::currentMSecsSinceEpoch() < deadline) {
-        QTest::qWait(10);
-    }
-    return !model.isLoading();
-}
-
-// Names in row order. macOS may hand names back in a different Unicode form
-// than they were created with, so they are normalised before comparing.
-QStringList names(const QAbstractItemModel &model)
-{
-    QStringList result;
-    for (int row = 0; row < model.rowCount(); ++row) {
-        result.append(model.index(row, FileModel::NameColumn).data().toString()
-                          .normalized(QString::NormalizationForm_C));
-    }
-    return result;
-}
-
-int rowOfName(const QAbstractItemModel &model, const QString &name)
-{
-    return names(model).indexOf(name);
-}
 
 }  // namespace
 
@@ -273,7 +208,9 @@ void TestFileModel::mimeDataListsEachFileOnce()
     }
     const std::unique_ptr<QMimeData> mime(model.mimeData(indexes));
     QVERIFY(mime);
-    QCOMPARE(mime->formats(), QStringList({"text/uri-list"}));
+    QCOMPARE(mime->formats(), QStringList({"text/uri-list", dragSourceFormat}));
+    // The panes' own drags say where they come from.
+    QCOMPARE(mime->data(dragSourceFormat), sample.dir.toUtf8());
     const QList<QUrl> urls = mime->urls();
     QCOMPARE(urls.size(), 2);
     QCOMPARE(urls.at(0).toLocalFile(), sample.dir + "/file2.txt");

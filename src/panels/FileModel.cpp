@@ -365,7 +365,14 @@ QVariant FileModel::headerData(int section, Qt::Orientation orientation, int rol
 
 QStringList FileModel::mimeTypes() const
 {
-    return {QStringLiteral("text/uri-list")};
+    return {QStringLiteral("text/uri-list"), QString::fromLatin1(dragSourceFormat)};
+}
+
+Qt::DropActions FileModel::supportedDropActions() const
+{
+    // What the panes accept as a drop target; whether the items are copied or
+    // moved is decided by the pane that receives them.
+    return Qt::CopyAction | Qt::MoveAction;
 }
 
 QMimeData *FileModel::mimeData(const QModelIndexList &indexes) const
@@ -383,5 +390,6 @@ QMimeData *FileModel::mimeData(const QModelIndexList &indexes) const
         }
     }
     mime->setUrls(urls);
+    mime->setData(QString::fromLatin1(dragSourceFormat), m_path.toUtf8());
     return mime;
 }

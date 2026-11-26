@@ -27,6 +27,11 @@ struct FileEntry {
 // Human-readable size, e.g. "1.4 MB".
 QString humanSize(qint64 bytes);
 
+// Extra mime format on drags that start in this app. A drop can tell them
+// from files dragged in from another app; the data is the folder the items
+// were dragged from.
+inline constexpr auto dragSourceFormat = "application/x-rust-commander-source";
+
 // The contents of one folder, as a table (name, size, type, modified).
 // The folder is read on a worker thread; the model is empty until the listing
 // arrives.
@@ -75,6 +80,7 @@ public:
     QVariant headerData(int section, Qt::Orientation orientation,
                         int role = Qt::DisplayRole) const override;
     QStringList mimeTypes() const override;
+    Qt::DropActions supportedDropActions() const override;
     QMimeData *mimeData(const QModelIndexList &indexes) const override;
 
 signals:
