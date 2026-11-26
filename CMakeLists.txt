@@ -31,6 +31,10 @@ add_library(app_core STATIC
     src/panels/FileProxyModel.h
     src/panels/FileView.cpp
     src/panels/FileView.h
+    src/ops/FileOps.cpp
+    src/ops/FileOps.h
+    src/ops/Shell.cpp
+    src/ops/Shell.h
 )
 target_link_libraries(app_core PUBLIC Qt6::Widgets Qt6::Concurrent Qt6::Svg)
 target_include_directories(app_core PUBLIC src)
@@ -75,9 +79,11 @@ endif()
 
 # The tests run on the "offscreen" platform, so they need no display.
 include(CTest)
+# A test that hangs must not hold up a build.
+set(CTEST_TEST_TIMEOUT 60)
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
-    set(APP_TESTS filemodel fileview)
+    set(APP_TESTS filemodel fileview fileops shell)
     foreach(test IN LISTS APP_TESTS)
         add_executable(test_${test} tests/${test}.cpp)
         target_link_libraries(test_${test} PRIVATE app_core Qt6::Test)
