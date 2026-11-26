@@ -19,6 +19,8 @@ qt_standard_project_setup()
 
 # Everything except main() goes into a library, so the tests can use it too.
 add_library(app_core STATIC
+    src/app/Dialogs.cpp
+    src/app/Dialogs.h
     src/app/MainWindow.cpp
     src/app/MainWindow.h
     src/app/Settings.cpp
@@ -33,6 +35,8 @@ add_library(app_core STATIC
     src/panels/FileView.h
     src/ops/FileOps.cpp
     src/ops/FileOps.h
+    src/ops/OperationRunner.cpp
+    src/ops/OperationRunner.h
     src/ops/Shell.cpp
     src/ops/Shell.h
 )
@@ -83,7 +87,7 @@ include(CTest)
 set(CTEST_TEST_TIMEOUT 60)
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
-    set(APP_TESTS filemodel fileview fileops shell)
+    set(APP_TESTS filemodel fileview fileops shell operationrunner)
     foreach(test IN LISTS APP_TESTS)
         add_executable(test_${test} tests/${test}.cpp)
         target_link_libraries(test_${test} PRIVATE app_core Qt6::Test)
