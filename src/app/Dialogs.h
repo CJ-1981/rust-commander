@@ -2,6 +2,8 @@
 
 #include <QString>
 
+#include <optional>
+
 #include "ops/FileOps.h"
 
 class QWidget;
@@ -18,8 +20,9 @@ public:
         Cancel,
     };
 
-    // A text the user enters; empty when cancelled.
-    virtual QString askText(const QString &title, const QString &label, const QString &value = {}) = 0;
+    // A text the user enters. Nothing when cancelled; an empty text is a text.
+    virtual std::optional<QString> askText(const QString &title, const QString &label,
+                                           const QString &value = {}) = 0;
     // A question with Yes / No / Cancel.
     virtual Answer ask(const QString &title, const QString &text) = 0;
     // Something to read, with an OK.
@@ -36,7 +39,8 @@ public:
     {
     }
 
-    QString askText(const QString &title, const QString &label, const QString &value = {}) override;
+    std::optional<QString> askText(const QString &title, const QString &label,
+                                   const QString &value = {}) override;
     Answer ask(const QString &title, const QString &text) override;
     void tell(const QString &title, const QString &text) override;
     FileOps::Existing askOverwrite(const QString &target) override;

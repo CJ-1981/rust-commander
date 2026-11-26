@@ -110,6 +110,8 @@ QTabBar::tab { background: transparent; color: @muted@; padding: 5px 10px; margi
                border-top-left-radius: 6px; border-top-right-radius: 6px; }
 QTabBar::tab:hover { background: @hover@; }
 QTabBar::tab:selected { background: @base@; border-color: @border@; color: @text@; }
+PaneWidget QTabBar { border-top: 2px solid transparent; }
+PaneWidget[active="true"] QTabBar { border-top: 2px solid @accent@; }
 
 QTableView { background: @base@; alternate-background-color: @alternate@; border: none;
              gridline-color: transparent; selection-background-color: @accent@;

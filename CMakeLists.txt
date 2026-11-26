@@ -33,6 +33,8 @@ add_library(app_core STATIC
     src/panels/FileProxyModel.h
     src/panels/FileView.cpp
     src/panels/FileView.h
+    src/panels/PaneWidget.cpp
+    src/panels/PaneWidget.h
     src/panels/PathBar.cpp
     src/panels/PathBar.h
     src/ops/FileOps.cpp
@@ -89,7 +91,7 @@ include(CTest)
 set(CTEST_TEST_TIMEOUT 60)
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
-    set(APP_TESTS filemodel fileview fileops shell operationrunner pathbar)
+    set(APP_TESTS filemodel fileview fileops shell operationrunner pathbar panewidget)
     foreach(test IN LISTS APP_TESTS)
         add_executable(test_${test} tests/${test}.cpp)
         target_link_libraries(test_${test} PRIVATE app_core Qt6::Test)

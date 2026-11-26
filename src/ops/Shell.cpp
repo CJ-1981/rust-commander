@@ -16,7 +16,7 @@ struct Terminal {
     QStringList arguments;
 };
 
-QString volumeName(const QStorageInfo &storage)
+QString nameOf(const QStorageInfo &storage)
 {
     const QString label = storage.name();
     if (!label.isEmpty()) {
@@ -129,12 +129,21 @@ QList<Volume> volumes()
         }
         Volume volume;
         volume.root = QDir::toNativeSeparators(storage.rootPath());
-        volume.name = volumeName(storage);
+        volume.name = nameOf(storage);
         volume.bytesTotal = qint64(storage.bytesTotal());
         volume.bytesFree = qint64(storage.bytesAvailable());
         result.append(volume);
     }
     return result;
+}
+
+QString volumeName(const QString &path)
+{
+    const QStorageInfo storage(path);
+    if (!storage.isValid()) {
+        return path;
+    }
+    return nameOf(storage);
 }
 
 qint64 freeBytes(const QString &path)

@@ -17,11 +17,15 @@ QString tr(const char *text)
 
 }  // namespace
 
-QString GuiDialogs::askText(const QString &title, const QString &label, const QString &value)
+std::optional<QString> GuiDialogs::askText(const QString &title, const QString &label,
+                                            const QString &value)
 {
     bool ok = false;
     const QString text = QInputDialog::getText(m_parent, title, label, QLineEdit::Normal, value, &ok);
-    return ok ? text : QString();
+    if (!ok) {
+        return std::nullopt;
+    }
+    return text;
 }
 
 Dialogs::Answer GuiDialogs::ask(const QString &title, const QString &text)

@@ -28,17 +28,6 @@ QString tr(const char *text)
     return QCoreApplication::translate("PathBar", text);
 }
 
-// What to call the root of a volume: its name, if it has one.
-QString volumeName(const QString &root)
-{
-    for (const Shell::Volume &volume : Shell::volumes()) {
-        if (QDir::cleanPath(QDir::fromNativeSeparators(volume.root)) == root) {
-            return volume.name;
-        }
-    }
-    return root;
-}
-
 }  // namespace
 
 // The row of folder buttons.
@@ -63,7 +52,8 @@ public:
             const QString here = QDir::cleanPath(dir.absolutePath());
             const QString name = dir.dirName();
             // The root of a volume has no name of its own.
-            m_items.prepend(Item{name.isEmpty() ? volumeName(here) : name, here});
+            // The root of a volume has no name of its own: it goes by the volume's.
+            m_items.prepend(Item{name.isEmpty() ? Shell::volumeName(here) : name, here});
             if (!dir.cdUp()) {
                 break;
             }

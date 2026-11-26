@@ -33,4 +33,8 @@ QList<Volume> volumes();
 // Free space on the volume `path` is on; -1 when it can't be told.
 qint64 freeBytes(const QString &path);
 
+// What to call the volume `path` is on: its name if it has one, else where
+// it is mounted.
+QString volumeName(const QString &path);
+
 }  // namespace Shell

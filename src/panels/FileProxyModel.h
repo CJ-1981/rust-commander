@@ -30,6 +30,11 @@ public:
 
     // The folder whose contents are listed; empty before the first listing.
     QString folder() const;
+    // Whether that folder is being read.
+    bool isLoading() const;
+
+    // The row of the item at `path`, in the Name column; invalid if there is none.
+    QModelIndex indexForPath(const QString &path) const;
 
 protected:
     bool filterAcceptsRow(int sourceRow, const QModelIndex &sourceParent) const override;

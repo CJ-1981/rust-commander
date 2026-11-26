@@ -7,6 +7,7 @@
 #include <QWidget>
 
 #include <functional>
+#include <optional>
 
 #include "app/Dialogs.h"
 #include "helpers.h"
@@ -17,7 +18,10 @@ namespace {
 // Answers from a script, and remembers what it was asked.
 class ScriptedDialogs : public Dialogs {
 public:
-    QString askText(const QString &, const QString &, const QString &) override { return {}; }
+    std::optional<QString> askText(const QString &, const QString &, const QString &) override
+    {
+        return std::nullopt;
+    }
     Answer ask(const QString &, const QString &) override { return Answer::Cancel; }
     void tell(const QString &title, const QString &text) override
     {

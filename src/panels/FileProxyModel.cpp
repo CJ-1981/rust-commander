@@ -61,6 +61,19 @@ QString FileProxyModel::folder() const
     return model ? model->path() : QString();
 }
 
+bool FileProxyModel::isLoading() const
+{
+    const FileModel *model = fileModel();
+    return model && model->isLoading();
+}
+
+QModelIndex FileProxyModel::indexForPath(const QString &path) const
+{
+    const FileModel *model = fileModel();
+    const int row = model ? model->rowOf(path) : -1;
+    return row < 0 ? QModelIndex() : mapFromSource(model->index(row, FileModel::NameColumn));
+}
+
 bool FileProxyModel::filterAcceptsRow(int sourceRow, const QModelIndex &) const
 {
     const FileModel *model = fileModel();
