@@ -31,6 +31,8 @@ namespace {
 constexpr int kEdgeMargin = 24;      // distance from an edge at which a rubber band scrolls
 constexpr int kScrollInterval = 60;  // ms between scroll steps
 constexpr int kMaxDragImageRows = 6;
+constexpr int kMinNameWidth = 150;  // what the Name column keeps in a narrow pane
+constexpr int kScrollBarWidth = 14;  // room left for a scrollbar
 
 // Paths differ in case only on Windows.
 #ifdef Q_OS_WIN
@@ -90,6 +92,11 @@ public:
     {
         QStyleOptionViewItem opt = option;
         initStyleOption(&opt, index);
+        // Only names keep their end in view when they don't fit; for a type
+        // such as "Portable Document Format" the start matters more.
+        if (index.column() != FileModel::NameColumn) {
+            opt.textElideMode = Qt::ElideRight;
+        }
         const QWidget *widget = opt.widget;
         const QStyle *style = widget ? widget->style() : QApplication::style();
         style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
@@ -163,13 +170,14 @@ void FileView::setFileModel(FileProxyModel *model)
     QHeaderView *header = horizontalHeader();
     header->setSectionResizeMode(FileModel::NameColumn, QHeaderView::Stretch);
     header->resizeSection(FileModel::SizeColumn, 92);
-    header->resizeSection(FileModel::TypeColumn, 170);
-    header->resizeSection(FileModel::ModifiedColumn, 150);
+    header->resizeSection(FileModel::TypeColumn, 196);
+    header->resizeSection(FileModel::ModifiedColumn, 136);
     // Clicking a header sorts by that column. A new header indicates
     // "descending", so say "ascending" first or the list would start upside
     // down.
     header->setSortIndicator(FileModel::NameColumn, Qt::AscendingOrder);
     setSortingEnabled(true);
+    updateColumns();
 }
 
 QStringList FileView::selectedPaths() const
@@ -256,6 +264,33 @@ void FileView::paintEvent(QPaintEvent *event)
     if (rubber) {
         painter.drawRoundedRect(QRectF(m_rubber).adjusted(0.5, 0.5, -0.5, -0.5), 4, 4);
     }
+}
+
+// The name is what matters; the other columns give way, the type first, when
+// the pane is too narrow for all of them. Decided by the view's own width so
+// that a scrollbar appearing can't make a column flicker on and off.
+void FileView::updateColumns()
+{
+    int room = width() - 2 * frameWidth() - kScrollBarWidth - kMinNameWidth;
+    const auto fits = [&](int column) {
+        if (room < columnWidth(column)) {
+            return false;
+        }
+        room -= columnWidth(column);
+        return true;
+    };
+    const bool size = fits(FileModel::SizeColumn);
+    const bool modified = size && fits(FileModel::ModifiedColumn);
+    const bool type = modified && fits(FileModel::TypeColumn);
+    setColumnHidden(FileModel::SizeColumn, !size);
+    setColumnHidden(FileModel::ModifiedColumn, !modified);
+    setColumnHidden(FileModel::TypeColumn, !type);
+}
+
+void FileView::resizeEvent(QResizeEvent *event)
+{
+    QTableView::resizeEvent(event);
+    updateColumns();
 }
 
 void FileView::mousePressEvent(QMouseEvent *event)

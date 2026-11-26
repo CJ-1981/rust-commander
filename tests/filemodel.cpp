@@ -1,3 +1,4 @@
+#include <QLocale>
 #include <QMimeData>
 #include <QSignalSpy>
 #include <QStringList>
@@ -74,6 +75,9 @@ void TestFileModel::listsFoldersFirstInNaturalOrder()
     QCOMPARE(entry->suffix, QString("txt"));
     QVERIFY(!entry->isDir);
     QVERIFY(entry->modified.isValid());
+    QCOMPARE(model.index(file10, FileModel::ModifiedColumn).data().toString(),
+             QLocale::system().toString(entry->modified, QStringLiteral("yyyy-MM-dd HH:mm")));
+    QVERIFY(model.index(file10, FileModel::ModifiedColumn).data().toString().startsWith("20"));
     QCOMPARE(model.index(file10, FileModel::SizeColumn).data().toString(), humanSize(10));
     QVERIFY(!model.index(file10, FileModel::TypeColumn).data().toString().isEmpty());
     QCOMPARE(model.index(file10, FileModel::NameColumn).data(FileModel::PathRole).toString(),

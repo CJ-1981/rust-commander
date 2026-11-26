@@ -289,7 +289,8 @@ QVariant FileModel::data(const QModelIndex &index, int role) const
         case TypeColumn:
             return entry->type;
         case ModifiedColumn:
-            return entry->modified;
+            // The year in full, so that "26.11.26" and "26.11.27" are told apart.
+            return QLocale::system().toString(entry->modified, QStringLiteral("yyyy-MM-dd HH:mm"));
         default:
             return {};
         }

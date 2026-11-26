@@ -176,6 +176,7 @@ private slots:
     void dropChoosesCopyOrMove();
     void impossibleDropsAreRejected();
     void dragOverHighlightsFolderRow();
+    void narrowPanesDropColumns();
 };
 
 void TestFileView::clickSelectsShiftExtendsCtrlToggles()
@@ -558,6 +559,38 @@ void TestFileView::dragOverHighlightsFolderRow()
     QCoreApplication::sendEvent(viewport, &refused);
     QVERIFY(!refused.isAccepted());
     QCOMPARE(f.view.dropRow(), -1);
+}
+
+void TestFileView::narrowPanesDropColumns()
+{
+    Fixture f;
+    QVERIFY(f.listed);
+    const auto shown = [&]() {
+        QStringList columns;
+        for (int column = 0; column < FileModel::ColumnCount; ++column) {
+            if (!f.view.isColumnHidden(column)) {
+                columns.append(f.model.headerData(column, Qt::Horizontal).toString());
+            }
+        }
+        return columns;
+    };
+
+    f.view.resize(900, 470);
+    QCOMPARE(shown(), QStringList({"Name", "Size", "Type", "Modified"}));
+
+    // Room for the names first: the type goes, then the date, then the size.
+    f.view.resize(520, 470);
+    QCOMPARE(shown(), QStringList({"Name", "Size", "Modified"}));
+    f.view.resize(300, 470);
+    QCOMPARE(shown(), QStringList({"Name", "Size"}));
+    f.view.resize(190, 470);
+    QCOMPARE(shown(), QStringList({"Name"}));
+    QVERIFY(f.view.columnWidth(FileModel::NameColumn) >= 150);
+
+    // And back again.
+    f.view.resize(900, 470);
+    QCOMPARE(shown(), QStringList({"Name", "Size", "Type", "Modified"}));
+    QCOMPARE(f.proxy.columnCount(), FileModel::ColumnCount);
 }
 
 QTEST_MAIN(TestFileView)

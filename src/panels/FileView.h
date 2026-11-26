@@ -56,6 +56,7 @@ public:
     static bool dropIsPossible(const QMimeData &mime, const QString &targetFolder);
 
     void paintEvent(QPaintEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 signals:
     // Enter or a double-click on a row.
@@ -108,6 +109,8 @@ private:
     // Selects the rows from the pressed one to the one at `position`, also
     // when that is below the last row.
     void sweepTo(const QPoint &position);
+    // Hides the columns that don't fit when the pane is narrow.
+    void updateColumns();
     // Selects the rows the rubber band touches.
     void selectRubberRows();
     void setDropRow(int row);
