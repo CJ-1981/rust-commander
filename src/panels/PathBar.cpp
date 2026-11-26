@@ -261,9 +261,14 @@ private:
         for (int i = first; i < count; ++i) {
             const bool last = i == count - 1;
             const int available = qMax(0, room - x - (last ? 0 : kChevron));
-            const int width = qMin(widths.at(i), available);
-            m_items[i].text =
-                    metrics.elidedText(m_items[i].name, Qt::ElideMiddle, qMax(0, width - 2 * kPadding));
+            const int natural = widths.at(i);
+            const int width = qMin(natural, available);
+            // Shortened only when it really doesn't fit: asked to fit exactly,
+            // Qt sometimes puts an ellipsis in all the same.
+            m_items[i].text = natural <= available
+                                     ? m_items[i].name
+                                     : metrics.elidedText(m_items[i].name, Qt::ElideMiddle,
+                                                          qMax(0, width - 2 * kPadding));
             m_items[i].rect = QRect(x, 0, width, height());
             x += width + kChevron;
         }
