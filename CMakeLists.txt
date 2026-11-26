@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.21)
 
+# Qt 6.10's frameworks are built for macOS 13; without this the app would
+# require the macOS version of the machine that built it. (CMake pre-creates
+# the variable as empty.)
+if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET 13.0)
+endif()
+
 project(rust-commander VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -18,6 +25,10 @@ add_library(app_core STATIC
     src/app/Settings.h
     src/app/Theme.cpp
     src/app/Theme.h
+    src/panels/FileModel.cpp
+    src/panels/FileModel.h
+    src/panels/FileProxyModel.cpp
+    src/panels/FileProxyModel.h
 )
 target_link_libraries(app_core PUBLIC Qt6::Widgets Qt6::Concurrent Qt6::Svg)
 target_include_directories(app_core PUBLIC src)
@@ -64,7 +75,7 @@ endif()
 include(CTest)
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
-    set(APP_TESTS "")
+    set(APP_TESTS filemodel)
     foreach(test IN LISTS APP_TESTS)
         add_executable(test_${test} tests/${test}.cpp)
         target_link_libraries(test_${test} PRIVATE app_core Qt6::Test)
