@@ -6,6 +6,9 @@ CMakeCache.txt
 CMakeFiles/
 compile_commands.json
 
+# Build output of the egui version (on main)
+/target
+
 # OS junk
 .DS_Store
 Thumbs.db
