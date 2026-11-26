@@ -31,5 +31,7 @@ bool refreshSystem();
 // Colors of the current theme, for code that paints by hand.
 QColor accent();
 QColor muted();
+// A faint wash for what the pointer is over, or was just clicked.
+QColor hover();
 
 }  // namespace Theme

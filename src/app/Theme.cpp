@@ -234,4 +234,9 @@ QColor muted()
     return g_colors.muted;
 }
 
+QColor hover()
+{
+    return g_colors.hover;
+}
+
 }  // namespace Theme
