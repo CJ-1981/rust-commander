@@ -9,9 +9,9 @@
         <key>CFBundleIdentifier</key>
         <string>io.github.CJ-1981.rust-commander</string>
         <key>CFBundleVersion</key>
-        <string>0.1.9</string>
+        <string>0.2.0</string>
         <key>CFBundleShortVersionString</key>
-        <string>0.1.9</string>
+        <string>0.2.0</string>
         <key>CFBundleExecutable</key>
         <string>rust-commander</string>
         <key>CFBundlePackageType</key>
@@ -19,7 +19,7 @@
         <key>CFBundleIconFile</key>
         <string>AppIcon</string>
         <key>LSMinimumSystemVersion</key>
-        <string>10.13</string>
+        <string>11.0</string>
         <key>NSHighResolutionCapable</key>
         <true/>
         <key>NSPrincipalClass</key>

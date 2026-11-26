@@ -1,8 +1,10 @@
-# Rust build artifacts
-/target
-
-# Backup files
-**/*.rs.bk
+# Build directories (CMake)
+/build*
+/out
+/CMakeLists.txt.user
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
 
 # OS junk
 .DS_Store
