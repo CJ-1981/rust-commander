@@ -1,6 +1,15 @@
 #include "Settings.h"
 
+#include <QDir>
 #include <QMainWindow>
+
+void Settings::storeIn(const QString &folder)
+{
+    QDir().mkpath(folder);
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, folder);
+    QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, folder);
+}
 
 QSettings &Settings::values()
 {

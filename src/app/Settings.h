@@ -18,8 +18,13 @@ public:
         QString path;
     };
 
-    // The store itself. Tests point it at a scratch location.
+    // The store itself.
     static QSettings &values();
+
+    // Keeps the settings in files under `folder`, instead of where the
+    // system keeps them; for tests and off-screen rendering. Call before
+    // anything else here is used.
+    static void storeIn(const QString &folder);
 
     static Theme::Mode themeMode();
     static void setThemeMode(Theme::Mode mode);

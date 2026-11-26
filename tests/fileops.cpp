@@ -11,15 +11,6 @@
 
 namespace {
 
-QString readFile(const QString &path)
-{
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        return {};
-    }
-    return QString::fromUtf8(file.readAll());
-}
-
 // Answers overwrite questions from a script, and keeps count.
 class Answers : public FileOps::OverwritePrompt {
 public:

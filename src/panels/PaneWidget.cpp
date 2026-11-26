@@ -21,6 +21,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QPainter>
+#include <QStyle>
 #include <QTabBar>
 #include <QTimer>
 #include <QToolButton>
@@ -35,9 +37,10 @@ QString tr(const char *text)
     return QCoreApplication::translate("PaneWidget", text);
 }
 
-QString trn(const char *text, int n)
+// "1 folder", "2 folders".
+QString counted(int count, const QString &singular, const QString &plural)
 {
-    return QCoreApplication::translate("PaneWidget", text, nullptr, n);
+    return QStringLiteral("%1 %2").arg(count).arg(count == 1 ? singular : plural);
 }
 
 // A button for an action; the action's text is its tool tip.
@@ -48,6 +51,28 @@ QToolButton *buttonFor(QAction *action)
     button->setFocusPolicy(Qt::TabFocus);
     return button;
 }
+
+// A line of text that gives up its end, with an ellipsis, when there is no
+// room. Its length must not decide how wide a pane at least has to be.
+class ElidedLabel : public QLabel {
+public:
+    using QLabel::QLabel;
+
+    QSize minimumSizeHint() const override
+    {
+        return QSize(40, QLabel::minimumSizeHint().height());
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        const QRect box = contentsRect();
+        const QString line = fontMetrics().elidedText(text(), Qt::ElideMiddle, qMax(0, box.width()));
+        style()->drawItemText(&painter, box, Qt::AlignVCenter | Qt::AlignLeft, palette(), isEnabled(),
+                              line, foregroundRole());
+    }
+};
 
 // An application or another package looks like a folder, but is started rather than opened.
 bool isPackage(const QString &path)
@@ -64,6 +89,7 @@ PaneWidget::PaneWidget(Dialogs &dialogs, OperationRunner &runner, QWidget *paren
     , m_runner(runner)
     , m_model(new FileModel(this))
     , m_proxy(new FileProxyModel(this))
+    , m_mark(new QWidget)
     , m_watcher(new QFileSystemWatcher(this))
     , m_changeTimer(new QTimer(this))
 {
@@ -100,12 +126,18 @@ void PaneWidget::buildUi()
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
 
+    // The line over the tabs marks the pane the shortcuts act on.
+    m_mark->setObjectName("paneMark");
+    m_mark->setFixedHeight(2);
+    m_mark->setProperty("active", false);
+    layout->addWidget(m_mark);
+
     // The tabs
     auto *tabRow = new QHBoxLayout;
     tabRow->setContentsMargins(0, 0, 0, 0);
     tabRow->setSpacing(0);
     m_tabs = new QTabBar;
-    m_tabs->setTabsClosable(true);
+    m_tabs->setTabsClosable(false);
     m_tabs->setMovable(true);
     m_tabs->setExpanding(false);
     m_tabs->setElideMode(Qt::ElideMiddle);
@@ -154,8 +186,9 @@ void PaneWidget::buildUi()
     layout->addWidget(m_view, 1);
 
     // The status line
-    m_status = new QLabel;
+    m_status = new ElidedLabel;
     m_status->setObjectName("paneStatus");
+    m_status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     m_status->setContentsMargins(6, 3, 6, 4);
     layout->addWidget(m_status);
 
@@ -260,16 +293,51 @@ void PaneWidget::setActions(const QList<QAction *> &actions)
     }
 }
 
+void PaneWidget::setMenuActions(const QList<QAction *> &actions)
+{
+    m_actions = actions;
+}
+
+void PaneWidget::nextTab()
+{
+    const int count = m_tabs->count();
+    if (count > 1) {
+        m_tabs->setCurrentIndex((m_tabs->currentIndex() + 1) % count);
+    }
+}
+
+void PaneWidget::previousTab()
+{
+    const int count = m_tabs->count();
+    if (count > 1) {
+        m_tabs->setCurrentIndex((m_tabs->currentIndex() - 1 + count) % count);
+    }
+}
+
+void PaneWidget::closeCurrentTab()
+{
+    closeTab(m_tabs->currentIndex());
+}
+
 void PaneWidget::setActive(bool active)
 {
     if (m_active == active) {
         return;
     }
     m_active = active;
-    // The style sheet has rules for the "active" property.
-    style()->unpolish(this);
-    style()->polish(this);
-    update();
+    // Only the line is restyled: the style sheet has rules for its "active"
+    // property. Restyling the whole pane would reset the colors its children
+    // inherit.
+    m_mark->setProperty("active", active);
+    m_mark->style()->unpolish(m_mark);
+    m_mark->style()->polish(m_mark);
+    m_mark->update();
+
+    // The selection of the active pane is shown in full; the other pane's is fainter.
+    m_view->setProperty("active", active);
+    m_view->style()->unpolish(m_view);
+    m_view->style()->polish(m_view);
+    m_view->viewport()->update();
 }
 
 void PaneWidget::setFocusToFiles()
@@ -334,12 +402,35 @@ void PaneWidget::addTab(const QString &path)
     const QSignalBlocker block(m_tabs);
     const int index = m_tabs->addTab(tabTitle(m_tabList.size() - 1));
     m_tabs->setTabToolTip(index, created.path);
+    m_tabs->setTabButton(index, QTabBar::RightSide, closeButton());
     m_tabs->setCurrentIndex(index);
     // currentChanged was blocked on purpose: the tab is loaded here, once.
     m_lastCursorRow = -1;
     m_reloading = false;
     loadTab();
     emit stateChanged();
+}
+
+// The "×" of a tab. It finds its own tab when clicked, so that moving tabs
+// doesn't move the closing to another one.
+QToolButton *PaneWidget::closeButton()
+{
+    auto *close = new QToolButton(m_tabs);
+    close->setObjectName("tabClose");
+    close->setText(QStringLiteral("\u00d7"));
+    close->setAutoRaise(true);
+    close->setFixedSize(16, 16);
+    close->setFocusPolicy(Qt::NoFocus);
+    close->setToolTip(tr("Close tab (Ctrl+W)"));
+    connect(close, &QToolButton::clicked, this, [this, close] {
+        for (int index = 0; index < m_tabs->count(); ++index) {
+            if (m_tabs->tabButton(index, QTabBar::RightSide) == close) {
+                closeTab(index);
+                return;
+            }
+        }
+    });
+    return close;
 }
 
 void PaneWidget::closeTab(int index)
@@ -694,9 +785,9 @@ void PaneWidget::deleteSelected(bool permanently)
         return;
     }
     const int count = paths.size();
-    const QString question =
-            permanently ? trn("Delete %n items for good? This can't be undone.", count)
-                        : trn("Move %n items to the Trash?", count);
+    const QString items = count == 1 ? tr("this item") : tr("these %1 items").arg(count);
+    const QString question = permanently ? tr("Delete %1 for good? This can't be undone.").arg(items)
+                                         : tr("Move %1 to the Trash?").arg(items);
     const Dialogs::Answer answer =
             m_dialogs.ask(permanently ? tr("Delete") : tr("To the Trash"), question);
     if (answer != Dialogs::Answer::Yes) {
@@ -731,6 +822,11 @@ void PaneWidget::showFilter()
 {
     m_filter->setFocus(Qt::OtherFocusReason);
     m_filter->selectAll();
+}
+
+void PaneWidget::typePath()
+{
+    m_path->edit();
 }
 
 void PaneWidget::copyTo(const QString &targetFolder)
@@ -833,10 +929,10 @@ void PaneWidget::updateStatus()
         parts << (m_model->isLoading() ? tr("Loading\u2026") : tr("Nothing here"));
     } else {
         if (folders > 0) {
-            parts << trn("%n folders", folders);
+            parts << counted(folders, tr("folder"), tr("folders"));
         }
         if (files > 0) {
-            parts << trn("%n files", files);
+            parts << counted(files, tr("file"), tr("files"));
         }
     }
     if (!m_proxy->filterText().isEmpty()) {
@@ -862,10 +958,10 @@ void PaneWidget::updateStatus()
         }
         QStringList what;
         if (selectedFolders > 0) {
-            what << trn("%n folders", selectedFolders);
+            what << counted(selectedFolders, tr("folder"), tr("folders"));
         }
         if (selectedFiles > 0) {
-            what << trn("%n files", selectedFiles) + QStringLiteral(" (") + humanSize(bytes) + QLatin1Char(')');
+            what << counted(selectedFiles, tr("file"), tr("files")) + QStringLiteral(" (") + humanSize(bytes) + QLatin1Char(')');
         }
         if (!what.isEmpty()) {
             parts << tr("Selected: %1").arg(what.join(QStringLiteral(", ")));

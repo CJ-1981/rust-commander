@@ -93,6 +93,10 @@ QString fillIn(const QString &spec, const Colors &c)
     s.replace("@hover@", c.hover.name(QColor::HexArgb));
     s.replace("@pressed@", c.pressed.name(QColor::HexArgb));
     s.replace("@menu@", c.menu.name());
+    // A fainter selection for the pane that is not the active one.
+    QColor dim = c.accent;
+    dim.setAlpha(c.window.lightness() > 128 ? 60 : 84);
+    s.replace("@dimSelection@", dim.name(QColor::HexArgb));
     return s;
 }
 
@@ -110,20 +114,24 @@ QTabBar::tab { background: transparent; color: @muted@; padding: 5px 10px; margi
                border-top-left-radius: 6px; border-top-right-radius: 6px; }
 QTabBar::tab:hover { background: @hover@; }
 QTabBar::tab:selected { background: @base@; border-color: @border@; color: @text@; }
-PaneWidget QTabBar { border-top: 2px solid transparent; }
-PaneWidget[active="true"] QTabBar { border-top: 2px solid @accent@; }
+#paneMark { background: transparent; }
+#paneMark[active="true"] { background: @accent@; }
+QToolButton#tabClose { padding: 0; border-radius: 3px; color: @muted@; }
 
 QTableView { background: @base@; alternate-background-color: @alternate@; border: none;
-             gridline-color: transparent; selection-background-color: @accent@;
-             selection-color: #ffffff; outline: none; }
+             gridline-color: transparent; selection-background-color: @dimSelection@;
+             selection-color: @text@; outline: none; }
+QTableView[active="true"] { selection-background-color: @accent@; selection-color: #ffffff; }
 QTableView::item { padding: 0 6px; border: none; }
 QHeaderView::section { background: @base@; color: @muted@; border: none;
                        border-bottom: 1px solid @border@; padding: 6px; }
 QTableCornerButton::section { background: @base@; border: none; }
 
-QSplitter::handle { background: @border@; }
-QSplitter::handle:horizontal { width: 1px; }
-QSplitter::handle:vertical { height: 1px; }
+QSplitter::handle:horizontal { width: 7px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 @window@, stop:0.5 @border@, stop:0.64 @border@, stop:0.64 @window@); }
+QSplitter::handle:horizontal:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 @window@, stop:0.4 @accent@, stop:0.6 @accent@, stop:0.6 @window@); }
+QSplitter::handle:vertical { height: 7px; background: @border@; }
 
 QLineEdit { border: 1px solid @border@; border-radius: 6px; padding: 4px 8px;
             background: @base@; selection-background-color: @accent@; selection-color: #ffffff; }
@@ -139,7 +147,9 @@ QMenu::item { padding: 5px 24px 5px 12px; border-radius: 4px; }
 QMenu::item:selected { background: @accent@; color: #ffffff; }
 QMenu::separator { height: 1px; background: @border@; margin: 4px 8px; }
 
-QStatusBar { border-top: 1px solid @border@; }
+#keyRow { border-top: 1px solid @border@; }
+#keyRow QToolButton { padding: 4px 8px; color: @text@; }
+#paneStatus { color: @muted@; border-top: 1px solid @border@; }
 QStatusBar::item { border: none; }
 
 QProgressBar { border: none; border-radius: 4px; background: @alternate@; height: 8px; }

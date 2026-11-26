@@ -31,8 +31,8 @@ namespace {
 constexpr int kEdgeMargin = 24;      // distance from an edge at which a rubber band scrolls
 constexpr int kScrollInterval = 60;  // ms between scroll steps
 constexpr int kMaxDragImageRows = 6;
-constexpr int kMinNameWidth = 150;  // what the Name column keeps in a narrow pane
-constexpr int kScrollBarWidth = 14;  // room left for a scrollbar
+constexpr int kMinNameWidth = 120;  // what the Name column keeps in a narrow pane
+constexpr int kScrollBarWidth = 10;  // room left for a scrollbar
 
 // Paths differ in case only on Windows.
 #ifdef Q_OS_WIN

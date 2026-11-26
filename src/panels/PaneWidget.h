@@ -20,6 +20,7 @@ class QModelIndex;
 class OperationRunner;
 class PathBar;
 class QTabBar;
+class QToolButton;
 class QTimer;
 
 // One side of the window: a row of folder tabs, the path, buttons for what
@@ -49,6 +50,13 @@ public:
     // The actions the menus and shortcuts stand for; they are shown as
     // buttons and in the context menu, and act on this pane.
     void setActions(const QList<QAction *> &actions);
+    // Only for the context menu.
+    void setMenuActions(const QList<QAction *> &actions);
+    // The next tab round, the one before; closing the last one does nothing.
+    void nextTab();
+    void previousTab();
+    void closeCurrentTab();
+    bool showsFolderSizes() const { return m_folderSizes; }
     // Marks the pane as the one the shortcuts act on.
     void setActive(bool active);
     // Moves the keyboard focus to the file table.
@@ -79,6 +87,8 @@ public:
     void toggleHidden();
     void toggleFolderSizes();
     void showFilter();
+    // The path bar as a field, with the whole path selected.
+    void typePath();
     void copyTo(const QString &targetFolder);
     void moveTo(const QString &targetFolder);
     // To the other pane, which decides where that is.
@@ -127,6 +137,7 @@ private:
     // The name to offer for something new: `base`, or "base 2", "base 3", ...
     QString unusedName(const QString &base) const;
     void renameTab(int index);
+    QToolButton *closeButton();
     void dropped(const QList<QUrl> &urls, const QString &targetFolder, Qt::DropAction action,
                  bool ask);
     void showContextMenu(const QPoint &position);
@@ -142,6 +153,7 @@ private:
     QLineEdit *m_filter;
     QHBoxLayout *m_actionLayout = nullptr;
     QLabel *m_status;
+    QWidget *m_mark;          // the line over the tabs, for the pane that is active
     QFileSystemWatcher *m_watcher;
     QTimer *m_changeTimer;  // changes come in bursts; one refresh is enough
     QList<Tab> m_tabList;

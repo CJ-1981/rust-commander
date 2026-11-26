@@ -77,12 +77,8 @@ void FileModel::load(const QString &path)
     m_error.clear();
     m_loading = true;
     const quint64 generation = ++m_generation;
-
-    beginResetModel();
-    m_entries.clear();
-    m_folderSizes.clear();
-    m_sizeRequests.clear();
-    endResetModel();
+    // What was listed before stays on screen until the new listing is there,
+    // so that the list doesn't go blank for a moment on every refresh.
 
     auto *watcher = new QFutureWatcher<Listing>(this);
     connect(watcher, &QFutureWatcher<Listing>::finished, this,
@@ -97,6 +93,8 @@ void FileModel::load(const QString &path)
                 m_error = listing.error;
                 beginResetModel();
                 m_entries = listing.entries;
+                m_folderSizes.clear();
+                m_sizeRequests.clear();
                 endResetModel();
                 if (m_error.isEmpty()) {
                     emit listingFinished(m_path);

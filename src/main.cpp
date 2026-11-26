@@ -15,14 +15,18 @@ namespace {
 
 // Draws the window to `png` without showing it on screen and exits. Used to
 // check the look of the app from scripts and tests.
-int renderTo(const QString &renderTarget, Theme::Mode mode)
+int renderTo(const QString &renderTarget, Theme::Mode mode, const QString &startPath)
 {
     Theme::apply(mode);
+    if (!startPath.isEmpty()) {
+        Settings::setTabPaths(0, {startPath});
+        Settings::setTabPaths(1, {startPath});
+    }
     MainWindow window;
     window.resize(1180, 660);
     window.show();
-    // Let layouts settle and first listings load.
-    for (int i = 0; i < 25; ++i) {
+    // Let layouts settle and the first listings load.
+    for (int i = 0; i < 40; ++i) {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
         QThread::msleep(10);
     }
@@ -63,10 +67,9 @@ int main(int argc, char *argv[])
 
     if (!renderTarget.isEmpty()) {
         // Rendering must not touch the user's real settings.
-        QSettings::setPath(QSettings::NativeFormat, QSettings::UserScope,
-                           QDir::temp().filePath("rust-commander-render"));
-        return renderTo(renderTarget,
-                        Theme::modeFromName(renderTheme, Theme::Mode::System));
+        Settings::storeIn(QDir::temp().filePath("rust-commander-render"));
+        return renderTo(renderTarget, Theme::modeFromName(renderTheme, Theme::Mode::System),
+                        startPath);
     }
 
     Theme::apply(Settings::themeMode());
