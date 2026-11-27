@@ -15,6 +15,10 @@
 #include "app/Dialogs.h"
 #include "panels/FileModel.h"
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+
 inline bool writeFile(const QString &path, const QByteArray &content)
 {
     QFile file(path);
