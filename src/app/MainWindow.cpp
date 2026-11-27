@@ -197,8 +197,16 @@ void MainWindow::createActions()
     a.folderSizes->setCheckable(true);
 
     make(&a.newTab, "plus", tr("New tab"), {key("Ctrl+T")}, [pane] { pane()->addTab(); });
-    make(&a.nextTab, "chevrons-right", tr("Next tab"), {key("Ctrl+Tab")}, [pane] { pane()->nextTab(); });
-    make(&a.previousTab, "chevrons-left", tr("Previous tab"), {key("Ctrl+Shift+Tab")},
+#ifdef Q_OS_MACOS
+    // Cmd+Tab and Cmd+Shift+Tab switch applications and windows there.
+    const char *nextTabKeys = "Ctrl+Alt+Right";
+    const char *previousTabKeys = "Ctrl+Alt+Left";
+#else
+    const char *nextTabKeys = "Ctrl+Tab";
+    const char *previousTabKeys = "Ctrl+Shift+Tab";
+#endif
+    make(&a.nextTab, "chevrons-right", tr("Next tab"), {key(nextTabKeys)}, [pane] { pane()->nextTab(); });
+    make(&a.previousTab, "chevrons-left", tr("Previous tab"), {key(previousTabKeys)},
          [pane] { pane()->previousTab(); });
     make(&a.closeTab, "x", tr("Close tab"), {key("Ctrl+W")}, [pane] { pane()->closeCurrentTab(); });
     make(&a.swapPanes, "arrow-left-right", tr("Swap panes"), {key("Ctrl+U")}, [this] {
@@ -421,7 +429,9 @@ void MainWindow::refreshActions()
 
 void MainWindow::showViewer(const QString &path, bool edit)
 {
-    if (!path.isEmpty()) {
+    // Only files: there is nothing to show as text in a folder.
+    const QFileInfo info(path);
+    if (info.exists() && info.isFile()) {
         ViewerWindow::open(path, edit ? ViewerWindow::Mode::Edit : ViewerWindow::Mode::View,
                            *m_dialogs, this);
     }
@@ -512,6 +522,13 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    // Editors with changes are asked first; one that stays open keeps the window.
+    for (ViewerWindow *viewer : findChildren<ViewerWindow *>()) {
+        if (!viewer->close()) {
+            event->ignore();
+            return;
+        }
+    }
     Settings::setTabPaths(0, m_left->tabPaths());
     Settings::setTabPaths(1, m_right->tabPaths());
     Settings::saveLayout(this, m_splitter->saveState());

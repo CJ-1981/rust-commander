@@ -43,6 +43,10 @@ private slots:
     void tabIndentsAndTheKeysStayInTheText();
     void closingWithChangesAsksFirst();
     void aFileThatIsNotText();
+
+    // ---- added by the reviewer ----
+    void reviewSavingAFileInAnotherEncoding();
+    void reviewSavingKeepsTheBlankLinesAtTheEnd();
 };
 
 void TestViewer::showsAFileReadOnly()
@@ -177,6 +181,35 @@ void TestViewer::aFileThatIsNotText()
     ViewerWindow missing(f.root.path() + "/no-such-file", ViewerWindow::Mode::View, f.dialogs);
     QVERIFY(!missing.isText());
     QVERIFY(missing.editor()->toPlainText().contains(QStringLiteral("could not be read")));
+}
+
+// A text file in a single-byte encoding (Latin-1 here) is edited and saved.
+void TestViewer::reviewSavingAFileInAnotherEncoding()
+{
+    Fixture f(QByteArray("caf\xE9 ol\xE9\n"));
+    ViewerWindow viewer(f.path, ViewerWindow::Mode::Edit, f.dialogs);
+    qInfo() << "shown:" << viewer.editor()->toPlainText() << "| read-only:" << viewer.editor()->isReadOnly();
+    QVERIFY(viewer.isText());
+    viewer.editor()->moveCursor(QTextCursor::End);
+    viewer.editor()->insertPlainText(QStringLiteral("x"));
+    QVERIFY(viewer.save());
+    qInfo() << "on disk before:" << f.original.toHex() << "| after:" << f.onDisk().toHex();
+    // The letters that were there must still be there.
+    QVERIFY(f.onDisk().contains("caf"));
+    QVERIFY(!f.onDisk().contains('\xEF'));
+}
+
+void TestViewer::reviewSavingKeepsTheBlankLinesAtTheEnd()
+{
+    Fixture f(QByteArray("a\n\n\n"));
+    ViewerWindow viewer(f.path, ViewerWindow::Mode::Edit, f.dialogs);
+    qInfo() << "text widget shows" << viewer.editor()->toPlainText().count(QChar('\n'))
+            << "newlines for 3 in the file";
+    viewer.editor()->moveCursor(QTextCursor::Start);
+    viewer.editor()->insertPlainText(QStringLiteral("b"));
+    QVERIFY(viewer.save());
+    qInfo() << "on disk before:" << f.original.toHex() << "| after:" << f.onDisk().toHex();
+    QCOMPARE(f.onDisk(), QByteArray("ba\n\n\n"));
 }
 
 QTEST_MAIN(TestViewer)

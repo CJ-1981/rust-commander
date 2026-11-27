@@ -5,6 +5,7 @@
 
 #include <QAction>
 #include <QCloseEvent>
+#include <QStringDecoder>
 #include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
@@ -16,6 +17,8 @@
 #include <QTextDocument>
 #include <QToolButton>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace {
 
@@ -32,17 +35,22 @@ bool looksBinary(const QByteArray &bytes)
     return bytes.left(kSniffBytes).contains('\0');
 }
 
-// UTF-8 if it is that; else what the system uses for files.
-QString decode(const QByteArray &bytes)
+}  // namespace
+
+QString ViewerWindow::decode(const QByteArray &bytes, Encoding *encoding)
 {
-    const QString utf8 = QString::fromUtf8(bytes);
-    if (!utf8.contains(QChar::ReplacementCharacter)) {
+    QStringDecoder decoder(QStringDecoder::Utf8);
+    const QString utf8 = decoder(bytes);
+    if (!decoder.hasError()) {
+        *encoding = Encoding::Utf8;
         return utf8;
     }
-    return QString::fromLocal8Bit(bytes);
+    // Taken byte for byte. Whatever the file's real encoding, nothing is
+    // replaced: written back the same way, it is as it was. (The letters of
+    // another encoding than Latin-1 just don't read right.)
+    *encoding = Encoding::Latin1;
+    return QString::fromLatin1(bytes);
 }
-
-}  // namespace
 
 ViewerWindow *ViewerWindow::open(const QString &path, Mode mode, Dialogs &dialogs, QWidget *parent)
 {
@@ -82,13 +90,13 @@ ViewerWindow::ViewerWindow(const QString &path, Mode mode, Dialogs &dialogs, QWi
     row->addWidget(m_note, 1);
     layout->addLayout(row);
 
-    // The file. Saved as UTF-8, whatever it was, with the line endings it had.
+    // The file, read as it is encoded; saved the same way.
     QFile file(m_path);
     const bool opened = file.open(QIODevice::ReadOnly);
     const QByteArray bytes = opened ? file.readAll() : QByteArray();
     m_isText = opened && !looksBinary(bytes);
     if (m_isText) {
-        m_text->setPlainText(decode(bytes));
+        m_text->setPlainText(decode(bytes, &m_encoding));
         if (bytes.contains("\r\n")) {
             m_lineEnding = "\r\n";
         }
@@ -137,7 +145,20 @@ bool ViewerWindow::save()
         return true;
     }
     // The text shows every line ending the same way; the file gets its own back.
-    QByteArray bytes = m_text->toPlainText().toUtf8();
+    QByteArray bytes;
+    const QString text = m_text->toPlainText();
+    if (m_encoding == Encoding::Latin1
+        && std::any_of(text.begin(), text.end(), [](QChar c) { return c.unicode() > 0xff; })) {
+        // Something was typed that the file's own encoding has no byte for.
+        // Rather than lose it, the file becomes UTF-8.
+        m_encoding = Encoding::Utf8;
+        m_note->setText(tr("Saved as UTF-8: the new text does not fit the encoding the file had."));
+        bytes = text.toUtf8();
+    } else if (m_encoding == Encoding::Latin1) {
+        bytes = text.toLatin1();
+    } else {
+        bytes = text.toUtf8();
+    }
     if (m_lineEnding == QByteArrayLiteral("\r\n")) {
         bytes.replace("\n", "\r\n");
     }

@@ -222,6 +222,9 @@ void PaneWidget::buildUi()
 
     // The files
     connect(m_view, &FileView::openRequested, this, [this](const QModelIndex &index) {
+        if (!showsTheFoldersRows()) {
+            return;  // a row of the folder before, still on screen
+        }
         const QString path = index.data(FileModel::PathRole).toString();
         // A package, an application mostly, is started; a folder is opened.
         if (isPackage(path)) {
@@ -254,14 +257,22 @@ QString PaneWidget::directory() const
     return tab().path;
 }
 
+// Until the listing of the folder gone to arrives, the table still shows the
+// rows of the folder before. They are kept on screen so that it doesn't go
+// blank, but nothing may be done to them.
+bool PaneWidget::showsTheFoldersRows() const
+{
+    return m_model->listedPath() == directory();
+}
+
 QStringList PaneWidget::selectedPaths() const
 {
-    return m_view->selectedPaths();
+    return showsTheFoldersRows() ? m_view->selectedPaths() : QStringList();
 }
 
 QString PaneWidget::cursorPath() const
 {
-    return m_view->currentPath();
+    return showsTheFoldersRows() ? m_view->currentPath() : QString();
 }
 
 QStringList PaneWidget::tabPaths() const
@@ -599,7 +610,12 @@ void PaneWidget::loadTab()
     if (!folder.isEmpty()) {
         m_watcher->addPath(folder);
     }
+    const bool elsewhere = folder != m_model->path();
     m_model->setPath(folder);
+    if (elsewhere) {
+        // Nothing looks selected, and so nothing looks ready to be worked on.
+        m_view->selectionModel()->clear();
+    }
     updateStatus();
 }
 
@@ -800,6 +816,11 @@ void PaneWidget::newFolder()
     if (!name || name->isEmpty()) {
         return;
     }
+    QString reason;
+    if (!FileOps::isAllowedName(*name, &reason)) {
+        m_dialogs.tell(tr("New folder"), reason);
+        return;
+    }
     QString error;
     if (!FileOps::makeFolder(folder + QLatin1Char('/') + *name, &error)) {
         m_dialogs.tell(tr("New folder"), error);
@@ -818,6 +839,11 @@ void PaneWidget::newFile()
     const std::optional<QString> name =
             m_dialogs.askText(tr("New file"), tr("Name of the new file:"), unusedName(tr("New file")));
     if (!name || name->isEmpty()) {
+        return;
+    }
+    QString reason;
+    if (!FileOps::isAllowedName(*name, &reason)) {
+        m_dialogs.tell(tr("New file"), reason);
         return;
     }
     QString error;

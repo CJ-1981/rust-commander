@@ -38,6 +38,13 @@ protected:
     void closeEvent(QCloseEvent *event) override;
 
 private:
+    // How the file's bytes and its text go together.
+    enum class Encoding {
+        Utf8,
+        Latin1,  // a file that isn't UTF-8: every byte is one character
+    };
+    static QString decode(const QByteArray &bytes, Encoding *encoding);
+
     void updateTitle();
 
     QString m_path;
@@ -46,5 +53,6 @@ private:
     QPlainTextEdit *m_text;
     QLabel *m_note;
     QByteArray m_lineEnding = "\n";  // what the file had: kept when it is saved
+    Encoding m_encoding = Encoding::Utf8;  // likewise
     bool m_isText = true;
 };

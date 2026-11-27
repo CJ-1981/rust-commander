@@ -32,6 +32,8 @@ public:
     QString folder() const;
     // Whether that folder is being read.
     bool isLoading() const;
+    // Why the last listing failed; empty when it didn't.
+    QString error() const;
 
     // The row of the item at `path`, in the Name column; invalid if there is none.
     QModelIndex indexForPath(const QString &path) const;

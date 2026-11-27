@@ -5,6 +5,7 @@
 #include <QFileInfo>
 #include <QLineEdit>
 #include <QMenu>
+#include <QPointer>
 #include <QPlainTextEdit>
 #include <QSplitter>
 #include <QTest>
@@ -104,6 +105,12 @@ private slots:
     void favoritesCanBeAddedAndRemoved();
     void tabsAndDividerAreSavedOnClosing();
     void f3AndF4OpenTheViewer();
+
+    // ---- added by the reviewer; each asserts what a user would expect ----
+    void reviewDeleteInAFieldEditsTheText();
+    void reviewClosingWithAnUnsavedEditorAsks();
+    void reviewViewOnAFolderOpensNothing();
+    void reviewAFolderIsMadeOnlyInTheFolderShown();
 
 private:
     QTemporaryDir m_settings;
@@ -228,9 +235,9 @@ void TestMainWindow::tabsHaveTheirKeys()
     QCOMPARE(f.left()->tabPaths(), QStringList({f.a, f.b}));
     QCOMPARE(f.left()->directory(), f.b);
 
-    QTest::keyClick(f.window.get(), Qt::Key_Tab, Qt::ControlModifier | Qt::ShiftModifier);
+    QTest::keySequence(f.window.get(), f.window->actions().previousTab->shortcut());
     QCOMPARE(f.left()->directory(), f.a);  // the tab before
-    QTest::keyClick(f.window.get(), Qt::Key_Tab, Qt::ControlModifier);
+    QTest::keySequence(f.window.get(), f.window->actions().nextTab->shortcut());
     QCOMPARE(f.left()->directory(), f.b);  // the next one round
 
     // The other pane's tabs are its own.
@@ -399,6 +406,85 @@ void TestMainWindow::f3AndF4OpenTheViewer()
     f.left()->files()->selectionModel()->clearCurrentIndex();
     QTest::keyClick(f.window.get(), Qt::Key_F3);
     QCOMPARE(f.viewersFor(file).size(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Reviewer's tests.
+// ---------------------------------------------------------------------------
+
+void TestMainWindow::reviewDeleteInAFieldEditsTheText()
+{
+    Fixture f;
+    QVERIFY(f.ready);
+    f.click(f.left(), "one.txt");
+    QLineEdit *filter = f.left()->filterField();
+    f.left()->showFilter();
+    QCOMPARE(QApplication::focusWidget(), filter);
+    QTest::keyClicks(filter, "ab");
+    QTest::keyClick(filter, Qt::Key_Home);
+    const int questions = f.dialogs.questions.size();
+    const int operations = 0;
+    QTest::keyClick(filter, Qt::Key_Delete);
+    qInfo() << "after Delete in the filter: text" << filter->text() << "| questions asked:"
+            << f.dialogs.questions.size() - questions;
+    // The key is for the text.
+    QCOMPARE(filter->text(), QString("b"));
+    QCOMPARE(f.dialogs.questions.size(), questions);
+    Q_UNUSED(operations);
+
+    // And "for good" with Shift, and in the field for the path.
+    QTest::keyClick(filter, Qt::Key_Delete, Qt::ShiftModifier);
+    QCOMPARE(f.dialogs.questions.size(), questions);
+    QVERIFY(QFileInfo::exists(f.a + "/one.txt"));
+}
+
+void TestMainWindow::reviewClosingWithAnUnsavedEditorAsks()
+{
+    Fixture f;
+    QVERIFY(f.ready);
+    f.click(f.left(), "one.txt");
+    QTest::keyClick(f.window.get(), Qt::Key_F4);
+    QList<ViewerWindow *> viewers = f.viewersFor(f.a + "/one.txt");
+    QCOMPARE(viewers.size(), 1);
+    QPointer<ViewerWindow> editor = viewers.first();
+    editor->editor()->appendPlainText(QStringLiteral("changed"));
+    QVERIFY(editor->isModified());
+
+    // The window is closed; the user does not want to lose the text.
+    f.dialogs.answer = Dialogs::Answer::Cancel;
+    const int questions = f.dialogs.questions.size();
+    const bool closed = f.window->close();
+    qInfo() << "close() returned" << closed << "| window visible:" << f.window->isVisible()
+            << "| editor still open:" << !editor.isNull() << "| questions asked:"
+            << f.dialogs.questions.size() - questions;
+    QVERIFY2(f.dialogs.questions.size() > questions, "the editor was not asked");
+}
+
+void TestMainWindow::reviewViewOnAFolderOpensNothing()
+{
+    Fixture f;
+    QVERIFY(f.ready);
+    f.click(f.left(), "sub");
+    QTest::keyClick(f.window.get(), Qt::Key_F3);
+    int opened = 0;
+    QString text;
+    for (ViewerWindow *viewer : f.viewersFor(f.a + "/sub")) {
+        ++opened;
+        text = viewer->editor()->toPlainText();
+    }
+    qInfo() << "viewers for a folder:" << opened << "|" << text;
+    QCOMPARE(opened, 0);
+}
+
+void TestMainWindow::reviewAFolderIsMadeOnlyInTheFolderShown()
+{
+    Fixture f;
+    QVERIFY(f.ready);
+    f.dialogs.text = QStringLiteral("../escaped");
+    f.window->actions().newFolder->trigger();
+    qInfo() << "made outside the folder shown:" << QFileInfo::exists(f.a + "/../escaped")
+            << "| told:" << f.dialogs.told;
+    QVERIFY2(!QFileInfo::exists(f.a + "/../escaped"), "a name with a path in it was accepted");
 }
 
 QTEST_MAIN(TestMainWindow)

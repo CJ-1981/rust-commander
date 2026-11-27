@@ -58,6 +58,10 @@ public:
     ~FileModel() override;
 
     QString path() const { return m_path; }
+    // The folder whose entries are in the model. Not `path()` while the
+    // listing of another folder is on its way: the entries are then still
+    // those of the folder before.
+    QString listedPath() const { return m_listedPath; }
     bool isLoading() const { return m_loading; }
     // Why the last listing failed; empty when it didn't.
     QString error() const { return m_error; }
@@ -106,6 +110,9 @@ private:
     qint64 folderSizeOf(const FileEntry &entry) const;
 
     QThreadPool m_pool;
+    // Apart from the listings': measuring folder sizes can take minutes on a
+    // slow disk, and a listing must not wait its turn behind that.
+    QThreadPool m_sizePool;
     // Set while the model is destroyed, so that the worker threads stop
     // measuring instead of holding up the destructor.
     std::shared_ptr<std::atomic<bool>> m_cancel = std::make_shared<std::atomic<bool>>(false);
@@ -113,6 +120,7 @@ private:
     quint64 m_generation = 0;
 
     QString m_path;
+    QString m_listedPath;
     QList<FileEntry> m_entries;
     QString m_error;
     bool m_loading = false;

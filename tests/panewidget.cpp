@@ -160,6 +160,10 @@ private slots:
     void aDropFromOutsideCopies();
     void aDropFromTheOtherPaneAsksFirst();
     void aClickMakesThePaneTheActiveOne();
+
+    // ---- added by the reviewer ----
+    void reviewNothingIsDoneToTheFolderLeftBehind();
+    void reviewTheFolderShownIsRemovedByAnotherProgram();
 };
 
 void TestPaneWidget::initTestCase()
@@ -548,6 +552,57 @@ void TestPaneWidget::aClickMakesThePaneTheActiveOne()
     QVERIFY(!f.pane.isActive());
     f.pane.setFocusToFiles();
     QVERIFY(f.pane.isActive());
+}
+
+// The pane goes to another folder. Until its listing arrives the table still
+// shows the rows of the folder left behind, under the new path.
+// While the listing of the folder gone to is on its way, the table still
+// shows the rows of the folder left. Nothing may be done to them.
+void TestPaneWidget::reviewNothingIsDoneToTheFolderLeftBehind()
+{
+    Fixture f;
+    QVERIFY(f.ready);
+    f.select("one.txt");
+    f.pane.navigateTo(f.path("other"));
+    QCOMPARE(f.pane.directory(), f.path("other"));
+
+    // (The listing of the new folder is on its way here.)
+    QVERIFY(f.pane.selectedPaths().isEmpty());
+    QVERIFY(f.pane.cursorPath().isEmpty());
+
+    // The user asks to delete what the table shows as selected.
+    f.dialogs.answer = Dialogs::Answer::Yes;
+    const int before = f.operations.count();
+    f.pane.deleteSelected(true);
+    QTest::qWait(300);
+    QCOMPARE(f.dialogs.questions.size(), 0);
+    QVERIFY2(QFileInfo::exists(f.path("a/one.txt")), "a file of the folder left behind was deleted");
+    QCOMPARE(f.operations.count(), before);
+
+    // Once the new folder is listed, it is shown (empty as it is).
+    QVERIFY(f.settle());
+    QCOMPARE(f.rows(), 0);
+}
+
+// Another program removes the folder the pane shows.
+void TestPaneWidget::reviewTheFolderShownIsRemovedByAnotherProgram()
+{
+    Fixture f;
+    QVERIFY(f.ready);
+    QVERIFY(QDir().rmdir(f.path("a/b/c")));
+    QVERIFY(QFile::remove(f.path("a/b/three.md")));
+    QVERIFY(QDir().rmdir(f.path("a/b")));
+    QVERIFY(QFile::remove(f.path("a/one.txt")));
+    QVERIFY(QFile::remove(f.path("a/two.txt")));
+    QVERIFY(QDir().rmdir(f.path("a")));
+    QTRY_COMPARE_WITH_TIMEOUT(f.rows(), 0, 5000);
+
+    // Said so, and still possible to leave.
+    QVERIFY(!f.pane.files()->fileModel()->error().isEmpty());
+    QTRY_VERIFY(f.pane.statusLabel()->text().contains(QStringLiteral("Nothing here")));
+    f.pane.goUp();
+    QVERIFY(f.settle());
+    QCOMPARE(f.pane.directory(), f.home);
 }
 
 QTEST_MAIN(TestPaneWidget)

@@ -44,7 +44,69 @@ private slots:
     void filtersByWords();
     void sortsBySizeAndDate();
     void computesFolderSizes();
+
+    // ---- added by the reviewer ----
+    void reviewListingIsNotHeldUpByFolderSizes();
 };
+
+// Folder sizes are being worked out for folders with many files; the user
+// goes somewhere else meanwhile. The listing of the new folder must not wait
+// for the measurements.
+void TestFileModel::reviewListingIsNotHeldUpByFolderSizes()
+{
+    QTemporaryDir root;
+    const QString dir = root.path();
+    for (const QString &name : {"big1", "big2", "big3", "big4"}) {
+        for (int i = 0; i < 12; ++i) {
+            const QString sub = dir + "/" + name + "/" + QString::number(i);
+            QVERIFY(makeFolder(sub));
+            for (int j = 0; j < 250; ++j) {
+                writeFile(sub + "/" + QString::number(j) + ".txt", "x");
+            }
+        }
+    }
+    QVERIFY(makeFolder(dir + "/small"));
+    QVERIFY(writeFile(dir + "/small/one.txt", "1"));
+    const auto sizeOfRow = [&](const FileModel &m, const QString &name) -> qint64 {
+        const int row = m.rowOf(dir + "/" + name);
+        return m.index(row, FileModel::SizeColumn).data(FileModel::FolderSizeRole).toLongLong();
+    };
+
+    // How long one measurement takes, for comparison.
+    qint64 one = 0;
+    {
+        FileModel probe;
+        probe.setPath(dir);
+        QVERIFY(waitListed(probe));
+        const qint64 started = QDateTime::currentMSecsSinceEpoch();
+        probe.requestFolderSizes();
+        QTRY_VERIFY_WITH_TIMEOUT(sizeOfRow(probe, "big1") > 0, 60000);
+        one = QDateTime::currentMSecsSinceEpoch() - started;
+    }
+
+    FileModel model;
+    // Without any measuring going on: the listing takes next to no time.
+    qint64 alone = 0;
+    for (int round = 0; round < 3; ++round) {
+        const qint64 t0 = QDateTime::currentMSecsSinceEpoch();
+        model.setPath(dir + "/small");
+        QVERIFY(waitListed(model));
+        alone = qMax(alone, QDateTime::currentMSecsSinceEpoch() - t0);
+    }
+
+    model.setPath(dir);
+    QVERIFY(waitListed(model));
+    const qint64 started = QDateTime::currentMSecsSinceEpoch();
+    model.requestFolderSizes();
+    model.setPath(dir + "/small");
+    QVERIFY(waitListed(model));
+    const qint64 listedAfter = QDateTime::currentMSecsSinceEpoch() - started;
+    qInfo() << "one measurement takes about" << one << "ms; the same listing alone takes" << alone
+            << "ms, with sizes being worked out:" << listedAfter << "ms";
+    QCOMPARE(names(model), QStringList({"one.txt"}));
+    QVERIFY2(listedAfter < alone + qMax<qint64>(40, one / 2),
+             "the listing waited behind the folder sizes");
+}
 
 void TestFileModel::listsFoldersFirstInNaturalOrder()
 {

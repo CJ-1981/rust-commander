@@ -36,6 +36,7 @@ FileModel::FileModel(QObject *parent)
     : QAbstractTableModel(parent)
 {
     m_pool.setMaxThreadCount(2);
+    m_sizePool.setMaxThreadCount(1);
 }
 
 FileModel::~FileModel()
@@ -90,6 +91,7 @@ void FileModel::load(const QString &path)
                 }
                 const Listing listing = watcher->result();
                 m_loading = false;
+                m_listedPath = m_path;
                 m_error = listing.error;
                 beginResetModel();
                 m_entries = listing.entries;
@@ -187,7 +189,7 @@ void FileModel::requestFolderSizes()
                         setFolderSize(result.path, result.bytes, result.items);
                     }
                 });
-        watcher->setFuture(QtConcurrent::run(&m_pool, [path, cancel = m_cancel]() -> FileModel::FolderSize {
+        watcher->setFuture(QtConcurrent::run(&m_sizePool, [path, cancel = m_cancel]() -> FileModel::FolderSize {
             // Symlinked folders are not followed, so a link loop can't run forever.
             QDirIterator it(path, QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
                             QDirIterator::Subdirectories);

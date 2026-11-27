@@ -4,10 +4,15 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QStorageInfo>
 
 #include <filesystem>
 #include <system_error>
+
+#ifdef Q_OS_MACOS
+#include <copyfile.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -73,6 +78,23 @@ bool samePath(const QString &a, const QString &b)
 bool tooDeep(const fs::path &path, QString *error)
 {
     return fail(error, tr("%1: the folders are nested too deeply.").arg(toQString(path)));
+}
+
+#ifdef Q_OS_MACOS
+// What a file has besides its bytes, Finder tags for instance, from one file
+// to the other. Done explicitly: the system's own copy isn't counted on to.
+void copyAttributes(const fs::path &from, const fs::path &to)
+{
+    const QByteArray fromName = QFile::encodeName(toQString(from));
+    const QByteArray toName = QFile::encodeName(toQString(to));
+    copyfile(fromName.constData(), toName.constData(), nullptr, COPYFILE_XATTR);
+}
+#endif
+
+// A path with "." or ".." in it doesn't say where something ends up.
+bool hasDotComponents(const QString &path)
+{
+    return path.contains(QRegularExpression(R"([/\]\.\.?([/\]|$))"));
 }
 
 // What there is to do for an item: its size, and how many files and folders
@@ -166,6 +188,8 @@ private:
     bool copyFile(const fs::path &from, const fs::path &to, QString *error);
     bool moveEntry(const fs::path &from, const fs::path &to, int depth,
                    const FileOps::MoveOptions &options, QString *error);
+    // Removes `path` and what is in it, one entry at a time.
+    bool removeTree(const fs::path &path, QString *error);
     bool tick(const QString &current, QString *error);
     void add(const Work &work);
 
@@ -214,6 +238,21 @@ Engine::Placement Engine::placement(const fs::path &from, const fs::path &to)
     const QString target = toQString(to);
     if (samePath(source, target)) {
         return Placement::Same;
+    }
+    // Inside the folder itself? Asked of each folder on the way up from the
+    // target, as well as of the names: the same folder is reached under
+    // another case of its name (APFS and NTFS ignore case) and through a
+    // link, and the names don't show that. A link of the folder's own name is
+    // a different matter: that is copied as what it is.
+    if (!fs::is_symlink(from, ec) && fs::is_directory(from, ec)) {
+        for (fs::path folder = to; !folder.empty(); folder = folder.parent_path()) {
+            if (fs::equivalent(from, folder, ec)) {
+                return Placement::Inside;
+            }
+            if (folder == folder.parent_path()) {
+                break;
+            }
+        }
     }
     if (target.startsWith(source + QLatin1Char('/'))) {
         return Placement::Inside;
@@ -283,6 +322,9 @@ bool Engine::copyFile(const fs::path &from, const fs::path &to, QString *error)
         std::error_code meta;
         fs::last_write_time(to, fs::last_write_time(from, meta), meta);
         fs::permissions(to, fs::status(from, meta).permissions(), fs::perm_options::replace, meta);
+#ifdef Q_OS_MACOS
+        copyAttributes(from, to);
+#endif
         m_done += bytes;
         m_totals.bytes += bytes;
         return true;
@@ -319,6 +361,9 @@ bool Engine::copyFile(const fs::path &from, const fs::path &to, QString *error)
     target.setPermissions(source.permissions());
     target.setFileTime(source.fileTime(QFileDevice::FileModificationTime),
                        QFileDevice::FileModificationTime);
+#ifdef Q_OS_MACOS
+    copyAttributes(from, to);
+#endif
     m_totals.bytes += bytes;
     return true;
 }
@@ -420,8 +465,10 @@ bool Engine::moveEntry(const fs::path &from, const fs::path &to, int depth,
     const bool isLink = fs::is_symlink(from, ec);
     const bool isFolder = !isLink && fs::is_directory(from, ec);
 
-    if (isFolder && fs::exists(to, ec) && fs::is_directory(to, ec)) {
-        // A folder of that name is there already: the contents move in.
+    if (isFolder && fs::exists(to, ec) && fs::is_directory(to, ec) && !fs::is_symlink(to, ec)) {
+        // A folder of that name is there already: the contents move in. (A
+        // link of that name is not a folder of that name, as in a copy: what
+        // is in the way is asked about below.)
         add(Work{.folders = 1});
         if (!tick(toQString(from), error)) {
             return false;
@@ -485,6 +532,12 @@ bool Engine::copy(const QStringList &sources, const QString &targetFolder, QStri
     for (const QString &source : sources) {
         const fs::path from = toPath(QDir::cleanPath(source));
         const fs::path to = folder / from.filename();
+        // Said before anything in the way is touched: a selection can be out
+        // of date, and what is asked to be copied may have been moved away.
+        std::error_code missing;
+        if (!fs::exists(fs::symlink_status(from, missing))) {
+            return fail(error, source, std::make_error_code(std::errc::no_such_file_or_directory));
+        }
         const Placement placement = Engine::placement(from, to);
         if (placement == Placement::Inside) {
             return fail(error, tr("%1 can't be copied into itself.").arg(source));
@@ -509,6 +562,11 @@ bool Engine::move(const QStringList &sources, const QString &targetFolder,
     for (const QString &source : sources) {
         const fs::path from = toPath(QDir::cleanPath(source));
         const fs::path to = folder / from.filename();
+        // As in copy(): nothing in the way is touched for a source that is gone.
+        std::error_code missing;
+        if (!fs::exists(fs::symlink_status(from, missing))) {
+            return fail(error, source, std::make_error_code(std::errc::no_such_file_or_directory));
+        }
         const Placement placement = Engine::placement(from, to);
         if (placement == Placement::Inside) {
             return fail(error, tr("%1 can't be moved into itself.").arg(source));
@@ -538,14 +596,8 @@ bool Engine::remove(const QStringList &paths, const QString &home, QString *erro
     }
     for (const QString &path : paths) {
         const fs::path target = toPath(QDir::cleanPath(path));
-        const Work work = measure(target);
-        std::error_code ec;
-        fs::remove_all(target, ec);
-        if (ec) {
-            return fail(error, path, ec);
-        }
-        add(work);
-        if (!tick(path, error)) {
+        // One entry at a time, so that there is something left to stop.
+        if (!removeTree(target, error)) {
             return false;
         }
     }
@@ -553,6 +605,40 @@ bool Engine::remove(const QStringList &paths, const QString &home, QString *erro
         *totals = m_totals;
     }
     return true;
+}
+
+// Removes `path` and what is in it, reporting after each entry. Links are
+// not followed. False when the user stopped it or something went wrong.
+bool Engine::removeTree(const fs::path &path, QString *error)
+{
+    std::error_code ec;
+    if (!fs::is_directory(fs::symlink_status(path, ec))) {
+        // A file, a link, or something else: gone in one step.
+        std::error_code sizeError;
+        const auto size = fs::file_size(path, sizeError);
+        fs::remove(path, ec);
+        if (ec) {
+            return fail(error, toQString(path), ec);
+        }
+        add(Work{.bytes = sizeError ? 0 : qint64(size), .files = 1});
+        return tick(toQString(path), error);
+    }
+    std::error_code itError;
+    fs::directory_iterator it(path, fs::directory_options::skip_permission_denied, itError);
+    if (itError) {
+        return fail(error, toQString(path), itError);
+    }
+    for (const fs::directory_entry &entry : it) {
+        if (!removeTree(entry.path(), error)) {
+            return false;
+        }
+    }
+    fs::remove(path, ec);
+    if (ec) {
+        return fail(error, toQString(path), ec);
+    }
+    add(Work{.folders = 1});
+    return tick(toQString(path), error);
 }
 
 }  // namespace
@@ -615,6 +701,9 @@ bool trash(const QStringList &paths, QString *error, Totals *totals, const QStri
 bool makeFolder(const QString &path, QString *error)
 {
     clear(error);
+    if (hasDotComponents(path)) {
+        return fail(error, tr("%1: \".\" and \"..\" can't be in a new folder's path.").arg(path));
+    }
     std::error_code ec;
     if (fs::exists(fs::symlink_status(toPath(path), ec))) {
         return fail(error, tr("%1 already exists.").arg(path));
@@ -629,6 +718,9 @@ bool makeFolder(const QString &path, QString *error)
 bool makeFile(const QString &path, QString *error)
 {
     clear(error);
+    if (hasDotComponents(path)) {
+        return fail(error, tr("%1: \".\" and \"..\" can't be in a new file's path.").arg(path));
+    }
     std::error_code ec;
     if (fs::exists(fs::symlink_status(toPath(path), ec))) {
         return fail(error, tr("%1 already exists.").arg(path));
@@ -704,21 +796,23 @@ bool isAllowedName(const QString &name, QString *reason)
 
 bool isProtected(const QString &path, const QString &home)
 {
-    const QString target = QFileInfo(path).canonicalFilePath();
-    if (target.isEmpty()) {
+    const fs::path target = toPath(QFileInfo(path).canonicalFilePath());
+    if (target.empty()) {
         return false;
     }
     // The home folder, and everything above it up to the root of the volume.
-    QString folder = QFileInfo(home).canonicalFilePath();
-    while (!folder.isEmpty()) {
-        if (samePath(folder, target)) {
+    // Asked of the folders themselves (is this the same folder?), not only
+    // of their names: the same folder is reached under other names, on macOS
+    // through the firmlinks under /System/Volumes.
+    std::error_code ec;
+    for (fs::path folder = toPath(QFileInfo(home).canonicalFilePath()); !folder.empty();
+         folder = folder.parent_path()) {
+        if (fs::equivalent(target, folder, ec)) {
             return true;
         }
-        const QString parent = QFileInfo(folder).path();
-        if (samePath(parent, folder)) {
+        if (folder == folder.parent_path()) {
             break;
         }
-        folder = parent;
     }
     return false;
 }

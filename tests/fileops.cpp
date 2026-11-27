@@ -1,4 +1,5 @@
 #include <QDateTime>
+#include <QDirIterator>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -8,6 +9,11 @@
 
 #include "helpers.h"
 #include "ops/FileOps.h"
+
+#include <filesystem>
+#ifdef Q_OS_MACOS
+#include <sys/xattr.h>
+#endif
 
 namespace {
 
@@ -92,6 +98,16 @@ private slots:
     void largeFilesAreCopiedInPiecesAndCanBeStopped();
     void sizes();
     void linksAreCopiedAsLinks();
+
+    // ---- added by the reviewer; each asserts the behaviour a user expects ----
+    void reviewCrossVolumeMoveKeepsWhatWasSkipped();
+    void reviewStopKeepsSomethingOfAFolderBeingRemoved();
+    void reviewGuardSeesTheHomeFolderThroughAFirmlink();
+    void reviewAFolderIsNotCopiedIntoItselfThroughAnAlias();
+    void reviewAFolderIsNotCopiedIntoItselfThroughAnotherCase();
+    void reviewMoveOntoASymlinkedFolderAsksLikeCopy();
+    void reviewAMissingSourceDoesNotRemoveItsTarget();
+    void reviewBothCopyWaysKeepWhatAFileHasBesidesItsBytes();
 };
 
 void TestFileOps::copiesFilesAndFolders()
@@ -520,6 +536,249 @@ void TestFileOps::linksAreCopiedAsLinks()
     // Not followed: the link has no size of its own, and what it points to doesn't count.
     QCOMPARE(FileOps::sizeOf(f.source + "/link"), 0);
     QCOMPARE(FileOps::sizeOf(f.source), 12);
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Reviewer's tests. They assert what a user would expect; a failure is the bug.
+// ---------------------------------------------------------------------------
+
+void TestFileOps::reviewCrossVolumeMoveKeepsWhatWasSkipped()
+{
+    QTemporaryDir root;
+    Folders f(root);
+    Recorder progress;
+    Answers answers;
+    QString error;
+    makeFolder(f.target + "/sub");
+    writeFile(f.target + "/sub/b.txt", "stays");
+
+    // The move onto another volume: copy, then the source removed.
+    answers.script = {FileOps::Existing::Skip};
+    const bool ok = FileOps::move({f.source + "/sub"}, f.target, answers, progress, &error, nullptr,
+                                  FileOps::MoveOptions{.renameOnSameVolume = false});
+    qInfo() << "moved:" << ok << "error:" << error << "asked:" << answers.asked;
+    // b.txt was skipped, as in the test with a rename: it must still be here.
+    QVERIFY2(QFileInfo::exists(f.source + "/sub/b.txt"),
+             "the file the user skipped is gone from the source");
+    QCOMPARE(readFile(f.target + "/sub/b.txt"), QString("stays"));
+}
+
+void TestFileOps::reviewStopKeepsSomethingOfAFolderBeingRemoved()
+{
+    QTemporaryDir root;
+    Folders f(root);
+    Recorder progress;
+    QString error;
+    // The first report (before the work) goes through, the next one says stop.
+    progress.stopAfter = 2;
+    const bool ok = FileOps::remove({f.source + "/sub"}, progress, &error);
+    qInfo() << "removed:" << ok << "error:" << error << "ticks:" << progress.ticks
+            << "c.txt still there:" << QFileInfo::exists(f.source + "/sub/deep/c.txt");
+    // Reported as stopped by the user (false, no error), so something must be left.
+    QVERIFY2(QFileInfo::exists(f.source + "/sub"), "Stop was honoured on paper, but all is gone");
+}
+
+void TestFileOps::reviewGuardSeesTheHomeFolderThroughAFirmlink()
+{
+#ifndef Q_OS_MACOS
+    QSKIP("firmlinks exist on macOS only");
+#else
+    // The Data volume is also reachable under /System/Volumes/Data; that is
+    // where the home folder really is.
+    const QString alias = QStringLiteral("/System/Volumes/Data") + QDir::homePath();
+    if (!QFileInfo::exists(alias)) {
+        QSKIP("no firmlink to the Data volume here");
+    }
+    std::error_code ec;
+    const bool same = std::filesystem::equivalent(alias.toStdString(), QDir::homePath().toStdString(), ec);
+    qInfo().noquote() << "canonical:" << QFileInfo(alias).canonicalFilePath()
+                      << "| same folder as home:" << same << "| protected:" << FileOps::isProtected(alias);
+
+    // That files can be removed through the firmlink, with a scratch file in a
+    // temp folder (the temp folder is on the same volume).
+    QTemporaryDir scratch;
+    QVERIFY(scratch.isValid());
+    const QString real = QFileInfo(scratch.path()).canonicalFilePath();
+    const QString through = QStringLiteral("/System/Volumes/Data") + real + "/victim.txt";
+    QVERIFY(writeFile(scratch.path() + "/victim.txt", "v"));
+    QVERIFY(QFileInfo::exists(through));
+    Recorder progress;
+    QString error;
+    QVERIFY(FileOps::remove({through}, progress, &error));
+    QVERIFY(!QFileInfo::exists(scratch.path() + "/victim.txt"));
+
+    // The home folder through the firmlink is the home folder.
+    QVERIFY2(FileOps::isProtected(alias), qPrintable(QFileInfo(alias).canonicalFilePath()));
+#endif
+}
+
+void TestFileOps::reviewAFolderIsNotCopiedIntoItselfThroughAnAlias()
+{
+#ifndef Q_OS_UNIX
+    QSKIP("needs symbolic links");
+#else
+    auto count = [](const QString &folder) {
+        int files = 0;
+        QDirIterator it(folder, QDir::Files, QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            it.next();
+            ++files;
+        }
+        return files;
+    };
+    Recorder progress;
+    Answers answers;
+    QString error;
+
+    // 1. The target folder is reached through a link to a folder inside the source.
+    {
+        QTemporaryDir root;
+        const QString real = root.path() + "/real";
+        QVERIFY(makeFolder(real + "/backup"));
+        QVERIFY(makeFolder(real + "/projects/one"));
+        QVERIFY(writeFile(real + "/projects/one/a.txt", "a"));
+        QVERIFY(writeFile(real + "/b.txt", "b"));
+        QVERIFY(QFile::link(real, root.path() + "/alias"));
+        const bool ok = FileOps::copy({real}, root.path() + "/alias/backup", answers, progress, &error);
+        qInfo() << "through a link: copied:" << ok << "error:" << error
+                << "| files in the source tree before: 2, after:" << count(real);
+        QVERIFY2(!ok && error.contains("into itself"), qPrintable(error));
+        QCOMPARE(count(real), 2);
+    }
+#endif
+}
+
+static int reviewCountFiles(const QString &folder)
+{
+    int files = 0;
+    QDirIterator it(folder, QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        it.next();
+        ++files;
+    }
+    return files;
+}
+
+void TestFileOps::reviewAFolderIsNotCopiedIntoItselfThroughAnotherCase()
+{
+    // The same, with the name in another case on a volume that ignores case
+    // (the usual APFS volume, and every NTFS volume on Windows).
+    Recorder progress;
+    Answers answers;
+    QString error;
+    QTemporaryDir root;
+    const QString real = root.path() + "/Docs";
+    QVERIFY(makeFolder(real + "/backup"));
+    QVERIFY(makeFolder(real + "/p1"));
+    QVERIFY(makeFolder(real + "/p2"));
+    QVERIFY(writeFile(real + "/backup/old.txt", "o"));
+    QVERIFY(writeFile(real + "/p1/a.txt", "a"));
+    QVERIFY(writeFile(real + "/p2/b.txt", "b"));
+    QVERIFY(writeFile(real + "/c.txt", "c"));
+    if (!QFileInfo::exists(root.path() + "/DOCS")) {
+        QSKIP("the temp volume tells cases apart");
+    }
+    const int before = reviewCountFiles(real);
+    const bool ok = FileOps::copy({real}, root.path() + "/DOCS/backup", answers, progress, &error);
+    qInfo() << "through the case: copied:" << ok << "| error:" << error.left(120)
+            << "| files in the source tree before:" << before << "after:" << reviewCountFiles(real);
+    QVERIFY2(!ok && error.contains("into itself"), qPrintable(error.left(200)));
+    QCOMPARE(reviewCountFiles(real), before);
+}
+
+void TestFileOps::reviewMoveOntoASymlinkedFolderAsksLikeCopy()
+{
+#ifndef Q_OS_UNIX
+    QSKIP("needs symbolic links");
+#else
+    QTemporaryDir root;
+    Folders f(root);
+    const QString elsewhere = root.path() + "/elsewhere";
+    QVERIFY(makeFolder(elsewhere));
+    QVERIFY(QFile::link(elsewhere, f.target + "/sub"));  // dst/sub leads to elsewhere
+
+    Recorder progress;
+    Answers answers;
+    QString error;
+    // Copy: asks about dst/sub, as it is not a plain folder.
+    const bool copied = FileOps::copy({f.source + "/sub"}, f.target, answers, progress, &error);
+    qInfo() << "copy: asked" << answers.asked << "target" << answers.targets << "| done:" << copied
+            << "| in elsewhere:" << QFileInfo::exists(elsewhere + "/deep");
+
+    // Move: does it ask too?
+    answers = Answers();
+    progress = Recorder();
+    const bool moved = FileOps::move({f.source + "/sub"}, f.target, answers, progress, &error);
+    qInfo() << "move: asked" << answers.asked << "| done:" << moved << error
+            << "| in elsewhere:" << QFileInfo::exists(elsewhere + "/deep")
+            << "| source gone:" << !QFileInfo::exists(f.source + "/sub");
+    // Nothing may end up behind a link without a word.
+    QVERIFY2(!QFileInfo::exists(elsewhere + "/deep"), "the folder was moved through the link");
+#endif
+}
+
+void TestFileOps::reviewAMissingSourceDoesNotRemoveItsTarget()
+{
+    QTemporaryDir root;
+    Folders f(root);
+    Recorder progress;
+    Answers answers;
+    QString error;
+
+    // A selection from a listing that is out of date: a.txt was moved away
+    // already (say by the job before it), and the target has it.
+    QVERIFY(FileOps::move({f.source + "/a.txt"}, f.target, answers, progress, &error));
+    QVERIFY(!QFileInfo::exists(f.source + "/a.txt"));
+
+    // Asked about the target, "Replace" is answered.
+    answers = Answers();
+    progress = Recorder();
+    answers.script = {FileOps::Existing::Overwrite};
+    const bool moved = FileOps::move({f.source + "/a.txt"}, f.target, answers, progress, &error);
+    qInfo() << "move of what isn't there: asked" << answers.asked << "| done:" << moved << "| error:"
+            << error << "| target still there:" << QFileInfo::exists(f.target + "/a.txt");
+    QVERIFY2(QFileInfo::exists(f.target + "/a.txt"),
+             "the only copy of the file was deleted for good");
+
+    // The same with a folder, and a copy.
+    QVERIFY(FileOps::copy({f.source + "/sub"}, f.target, answers, progress, &error));
+    QVERIFY(FileOps::remove({f.source + "/sub"}, progress, &error));
+    answers = Answers();
+    answers.script = {FileOps::Existing::Overwrite};
+    FileOps::copy({f.source + "/sub"}, f.target, answers, progress, &error);
+    qInfo() << "copy of what isn't there: asked" << answers.asked << "| c.txt in the target still there:"
+            << QFileInfo::exists(f.target + "/sub/deep/c.txt");
+    QVERIFY2(QFileInfo::exists(f.target + "/sub/deep/c.txt"),
+             "the only copy of the folder was deleted for good");
+}
+
+// A file on macOS has more than its bytes: tags, Finder information, the
+// quarantine mark. Kept by the copy in one go, and by the copy in pieces?
+void TestFileOps::reviewBothCopyWaysKeepWhatAFileHasBesidesItsBytes()
+{
+#ifdef Q_OS_MACOS
+    QTemporaryDir root;
+    Folders f(root);
+    Recorder progress;
+    Answers answers;
+    QString error;
+    QVERIFY(writeFile(f.source + "/small.bin", QByteArray(1000, 's')));
+    QVERIFY(writeFile(f.source + "/big.bin", QByteArray(9 * 1024 * 1024, 'b')));
+    const char *name = "com.example.review-tag";
+    const QByteArray value("a tag");
+    for (const char *file : {"/small.bin", "/big.bin"}) {
+        const QByteArray path = (f.source + file).toLatin1();
+        QVERIFY(setxattr(path.constData(), name, value.constData(), value.size(), 0, 0) == 0);
+    }
+    QVERIFY(FileOps::copy({f.source + "/small.bin", f.source + "/big.bin"}, f.target, answers, progress,
+                          &error));
+    char buffer[64];
+    const auto tag = [&](const QString &path) -> int {
+        return getxattr(path.toLatin1().constData(), name, buffer, sizeof(buffer), 0, 0);
+    };
+    QCOMPARE(tag(f.target + "/small.bin"), tag(f.source + "/small.bin"));
+    QCOMPARE(tag(f.target + "/big.bin"), tag(f.source + "/big.bin"));
 #endif
 }
 

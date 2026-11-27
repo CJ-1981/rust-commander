@@ -67,6 +67,12 @@ bool FileProxyModel::isLoading() const
     return model && model->isLoading();
 }
 
+QString FileProxyModel::error() const
+{
+    const FileModel *model = fileModel();
+    return model ? model->error() : QString();
+}
+
 QModelIndex FileProxyModel::indexForPath(const QString &path) const
 {
     const FileModel *model = fileModel();

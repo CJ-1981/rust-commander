@@ -106,6 +106,7 @@ private:
 
     // Marks or unmarks the current row and moves the cursor down.
     void toggleCurrent();
+    void toggleInPlace();
     // Selects the rows from the pressed one to the one at `position`, also
     // when that is below the last row.
     void sweepTo(const QPoint &position);

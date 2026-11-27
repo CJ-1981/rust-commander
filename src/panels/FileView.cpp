@@ -392,6 +392,13 @@ void FileView::contextMenuEvent(QContextMenuEvent *event)
 
 void FileView::keyPressEvent(QKeyEvent *event)
 {
+#ifdef Q_OS_MACOS
+    // Ctrl+Space, which marks the row under the cursor, is Spotlight's there.
+    if (event->key() == Qt::Key_Space && event->modifiers() == (Qt::ControlModifier | Qt::AltModifier)) {
+        toggleInPlace();
+        return;
+    }
+#endif
     if (event->modifiers() == Qt::NoModifier) {
         switch (event->key()) {
         case Qt::Key_Backspace:
@@ -463,6 +470,20 @@ void FileView::timerEvent(QTimerEvent *event)
     m_rubber = QRect(m_pressPos, m_pointer).normalized();
     selectRubberRows();
     viewport()->update();
+}
+
+// Marks or unmarks the row under the cursor and leaves the cursor there.
+void FileView::toggleInPlace()
+{
+    auto *selection = selectionModel();
+    const QModelIndex current = currentIndex();
+    if (!selection || !current.isValid()) {
+        return;
+    }
+    QItemSelection row;
+    row.select(current.siblingAtColumn(0), current.siblingAtColumn(FileModel::ColumnCount - 1));
+    selection->select(row, selection->isSelected(current) ? QItemSelectionModel::Deselect
+                                                           : QItemSelectionModel::Select);
 }
 
 void FileView::toggleCurrent()

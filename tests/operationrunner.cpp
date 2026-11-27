@@ -1,3 +1,5 @@
+#include <QDateTime>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QSignalSpy>
@@ -98,7 +100,72 @@ private slots:
     void cancellingInTheQuestionStopsTheRest();
     void queuesWhatComesInWhileBusy();
     void reportsFailuresAndGoesOn();
+
+    // ---- added by the reviewer ----
+    void reviewAMoveAskedForTwiceDestroysAFile();
+    void reviewGoesAwayWhileAQuestionIsWaiting();
+    void reviewGoesAwayWhileBusy();
 };
+
+// The user presses F6 (or the Move button) twice before the pane shows that
+// the files are gone: the second job finds nothing to move, but targets.
+void TestOperationRunner::reviewAMoveAskedForTwiceDestroysAFile()
+{
+    Fixture f;
+    f.files(3, false);
+    int done = 0;
+    // The first job needs no answer; the second is asked about every file.
+    f.dialogs.script = {FileOps::Existing::OverwriteAll};
+    f.runner.move(f.paths(3), f.target(), [&](const QString &) { ++done; });
+    f.runner.move(f.paths(3), f.target(), [&](const QString &) { ++done; });
+    QTRY_COMPARE_WITH_TIMEOUT(done, 2, 15000);
+    qInfo() << "asked:" << f.dialogs.asked << "told:" << f.dialogs.told << "| f000.txt in target:"
+            << QFileInfo::exists(f.target() + "/f000.txt") << "| in source:"
+            << QFileInfo::exists(f.source() + "/f000.txt");
+    QVERIFY2(QFileInfo::exists(f.target() + "/f000.txt"), "the file is gone for good");
+    QVERIFY2(f.dialogs.asked == 0, "asked about replacing a file whose source is gone");
+}
+
+// The window closes while the worker waits for an answer to its question.
+void TestOperationRunner::reviewGoesAwayWhileAQuestionIsWaiting()
+{
+    Fixture f;
+    f.files(2, true);
+    auto *runner = new OperationRunner(f.dialogs, &f.window);
+    int done = 0;
+    runner->copy(f.paths(2), f.target(), [&](const QString &) { ++done; });
+    // No events are processed: the question stays in the GUI thread's queue.
+    QTest::qSleep(300);
+    const qint64 started = QDateTime::currentMSecsSinceEpoch();
+    delete runner;
+    const qint64 taken = QDateTime::currentMSecsSinceEpoch() - started;
+    qInfo() << "destructor took" << taken << "ms | asked:" << f.dialogs.asked;
+    QVERIFY2(taken < 1000, "the destructor waited on a question nobody will answer");
+    QCOMPARE(f.dialogs.asked, 0);  // the question was never put
+    // Nothing is left that still refers to the runner.
+    QTest::qWait(200);
+    QCOMPARE(done, 0);
+}
+
+// The window closes in the middle of a long copy.
+void TestOperationRunner::reviewGoesAwayWhileBusy()
+{
+    Fixture f;
+    f.files(3000, false);
+    auto *runner = new OperationRunner(f.dialogs, &f.window);
+    runner->copy(f.paths(3000), f.target());
+    QTest::qWait(50);
+    const qint64 started = QDateTime::currentMSecsSinceEpoch();
+    delete runner;
+    const qint64 taken = QDateTime::currentMSecsSinceEpoch() - started;
+    int copied = 0;
+    const QStringList all = QDir(f.target()).entryList(QDir::Files);
+    copied = all.size();
+    qInfo() << "destructor took" << taken << "ms | files copied before it stopped:" << copied;
+    QVERIFY2(taken < 2000, "the destructor waited for the whole copy");
+    QVERIFY(copied < 3000);
+    QTest::qWait(200);
+}
 
 void TestOperationRunner::runsTheWorkElsewhere()
 {

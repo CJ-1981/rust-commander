@@ -173,6 +173,8 @@ private:
                  bool ask);
     void showContextMenu(const QPoint &position);
     void updateStatus();
+    // Whether the rows shown are those of the folder shown.
+    bool showsTheFoldersRows() const;
 
     Dialogs &m_dialogs;
     OperationRunner &m_runner;
