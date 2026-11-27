@@ -2,133 +2,328 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, qt]
     tags: ["v*"]
   pull_request:
-    branches: [main]
+    branches: [main, qt]
   workflow_dispatch:
 
+# A push or a pull request only needs to read the repository; the release job
+# below is the only one that gets more.
+permissions:
+  contents: read
+
+# A newer push to the same branch, tag or pull request ends the run it makes
+# pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
-  CARGO_TERM_COLOR: always
+  RC_QT_VERSION: '6.10.3'
 
 jobs:
-  build:
-    name: Build (${{ matrix.os }} / ${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact: RustCommander-macos-arm64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact: RustCommander-macos-x64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: RustCommander-windows-x64
-
+  macos:
+    name: Build, test and package (macOS, universal)
+    # macos-latest is macOS 26 on Apple Silicon at the moment. That is enough
+    # for both kinds of Mac: Qt's package for clang_64 is universal, and the
+    # app is built for both architectures below.
+    runs-on: macos-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
         with:
-          targets: ${{ matrix.target }}
+          version: ${{ env.RC_QT_VERSION }}
+          host: 'mac'
+          target: 'desktop'
+          arch: 'clang_64'
+          # The app needs qtsvg next to the base. For this Qt version qtsvg is
+          # one of the basic archives rather than an add-on module, so it has
+          # no name under `modules` (aqt rejects "-m qtsvg"). Named as an
+          # archive it is always installed, and nothing unneeded is.
+          archives: 'qtbase qtsvg'
 
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      - name: Clippy (non-blocking)
-        run: cargo clippy --target ${{ matrix.target }} --all-targets
-        continue-on-error: true
-
-      - name: Build (release)
-        run: cargo build --release --target ${{ matrix.target }}
-
-      # Headless UI and unit tests, on each OS the app is built for.
-      - name: Test
-        run: cargo test
-
-      - name: Generate macOS icon (ICNS)
-        if: runner.os == 'macOS'
-        shell: bash
+      - name: Read the version from the project
+        id: version
         run: |
-          mkdir -p AppIcon.iconset
-          for s in 16 32 128 256 512; do
-            d=$((s * 2))
-            sips -s format png -z $s $s resources/icon.png --out "AppIcon.iconset/icon_${s}x${s}.png"
-            sips -s format png -z $d $d resources/icon.png --out "AppIcon.iconset/icon_${s}x${s}@2x.png"
-          done
-          iconutil -c icns AppIcon.iconset -o AppIcon.icns
-
-      - name: Package (macOS .app bundle)
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          APP_NAME="Rust Commander"
-          mkdir -p "dist/${APP_NAME}.app/Contents/MacOS" "dist/${APP_NAME}.app/Contents/Resources"
-          cp resources/Info.plist "dist/${APP_NAME}.app/Contents/Info.plist"
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${VERSION}" "dist/${APP_NAME}.app/Contents/Info.plist"
-            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" "dist/${APP_NAME}.app/Contents/Info.plist"
+          version=$(sed -nE 's/^project\(rust-commander VERSION ([0-9]+(\.[0-9]+)*)[) ].*/\1/p' CMakeLists.txt)
+          if [ -z "$version" ]; then
+            echo "::error::No version was found in the project() call in CMakeLists.txt."
+            exit 1
           fi
-          cp AppIcon.icns "dist/${APP_NAME}.app/Contents/Resources/AppIcon.icns"
-          cp "target/${{ matrix.target }}/release/rust-commander" "dist/${APP_NAME}.app/Contents/MacOS/rust-commander"
-          chmod +x "dist/${APP_NAME}.app/Contents/MacOS/rust-commander"
-          # Ad-hoc sign the bundle. Gatekeeper rejects quarantined apps whose
-          # signature is missing or inconsistent as "damaged" with no bypass;
-          # an ad-hoc signature downgrades that to "unidentified developer",
-          # which users can open via right-click > Open (or Privacy settings).
-          codesign --force --deep --sign - "dist/${APP_NAME}.app"
-          codesign --verify --deep "dist/${APP_NAME}.app"
-          cd dist
-          # ditto (not zip) so the archive preserves signature metadata and permissions
-          ditto -c -k --sequesterRsrc --keepParent "${APP_NAME}.app" "${{ matrix.artifact }}.zip"
-          cd ..
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "The project's version is $version."
 
-      - name: Package (Windows zip)
-        if: runner.os == 'Windows'
-        shell: pwsh
+      - name: Configure
         run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Compress-Archive -Path "target/${{ matrix.target }}/release/rust-commander.exe" -DestinationPath "dist/${{ matrix.artifact }}.zip" -Force
+          cmake -S . -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" \
+                -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 
-      - name: Upload build artifact
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 120
+        env:
+          # Lets TestFileOps::trash run, which puts files into the Trash.
+          RC_TEST_TRASH: '1'
+
+      - name: Package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          app="build/bin/rust-commander.app"
+          exe="$app/Contents/MacOS/rust-commander"
+
+          # The Qt frameworks and plugins the app uses go into the bundle.
+          "$QT_ROOT_DIR/bin/macdeployqt" "$app"
+          # macdeployqt leaves the offscreen platform plugin out on purpose.
+          # The app's --render needs it, so it goes in too, before the signing.
+          cp "$QT_ROOT_DIR/plugins/platforms/libqoffscreen.dylib" \
+             "$app/Contents/PlugIns/platforms/"
+
+          # Signed ad hoc, as there is no Apple Developer ID. Gatekeeper then
+          # calls the app "unidentified developer", which can be opened anyway,
+          # rather than "damaged", which can't.
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+
+          # Everything the app loads from Qt has to be in the bundle, not in
+          # the Qt it was built with. macdeployqt keeps the references as
+          # "@rpath/Qt*.framework" and gives the executable library search
+          # paths (LC_RPATH) inside the bundle; that is what makes them mean
+          # the bundled copies. So, for each architecture: every search path
+          # is relative to the executable, and every Qt framework is found
+          # through them, inside the bundle.
+          real=$(cd "$app/Contents" && pwd -P)
+          for arch in arm64 x86_64; do
+            otool -arch "$arch" -L "$exe"
+            rpaths=$(otool -arch "$arch" -l "$exe" \
+                     | awk '/^ *cmd / { rpath = ($2 == "LC_RPATH") } rpath && /^ *path / { print $2 }')
+            stray=$(printf '%s\n' "$rpaths" | grep -Ev '^@(executable|loader)_path/' || true)
+            if [ -n "$stray" ]; then
+              echo "::error::Library search paths of the $arch slice that lead out of the bundle:"
+              printf '%s\n' "$stray"
+              exit 1
+            fi
+            deps=$(otool -arch "$arch" -L "$exe" \
+                   | grep -E '^[[:space:]]' \
+                   | sed -E 's/^[[:space:]]+//; s/[[:space:]]+\(.*$//' \
+                   | grep -E 'Qt[A-Za-z0-9]+\.framework|libQt6' || true)
+            if [ -z "$deps" ]; then
+              echo "::error::The $arch slice loads no Qt library, so this check is broken."
+              exit 1
+            fi
+            missing=""
+            while IFS= read -r dep; do
+              found=""
+              case "$dep" in
+                @executable_path/*)
+                  try="$app/Contents/MacOS/${dep#@executable_path/}"
+                  [ -e "$try" ] && found="$try"
+                  ;;
+                @rpath/*)
+                  for rpath in $rpaths; do
+                    rel=${rpath#@executable_path/}
+                    rel=${rel#@loader_path/}
+                    try="$app/Contents/MacOS/$rel/${dep#@rpath/}"
+                    if [ -e "$try" ]; then
+                      found="$try"
+                      break
+                    fi
+                  done
+                  ;;
+              esac
+              if [ -z "$found" ]; then
+                missing="$missing  $dep"$'\n'
+              else
+                where="$(cd "$(dirname "$found")" && pwd -P)/$(basename "$found")"
+                case "$where" in
+                  "$real"/*) echo "  $dep -> ${found#"$app"/}" ;;
+                  *) echo "::error::$dep is found outside the bundle: $found"; exit 1 ;;
+                esac
+              fi
+            done <<< "$deps"
+            if [ -n "$missing" ]; then
+              echo "::error::Qt libraries the $arch slice does not get from the bundle:"
+              printf '%s' "$missing"
+              exit 1
+            fi
+          done
+
+          # One program for Apple Silicon and for Intel.
+          lipo -info "$exe"
+          slices=" $(lipo -archs "$exe") "
+          for arch in arm64 x86_64; do
+            case "$slices" in
+              *" $arch "*) ;;
+              *) echo "::error::The executable has no $arch slice."; exit 1 ;;
+            esac
+          done
+
+          mkdir -p dist
+          # ditto, not zip, so that the archive keeps the signature and the
+          # other Mac metadata.
+          ditto -c -k --sequesterRsrc --keepParent "$app" "dist/rust-commander-$VERSION-macos.zip"
+          ls -la dist
+
+      - name: Check that the packaged app runs
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Out of the archive, off screen (so that no window is needed), and
+          # with no Qt in the environment: only what is in the bundle can be
+          # used. The checks on the load commands above are not enough: they
+          # passed for a bundle that could not start, for lack of a plugin.
+          check="$RUNNER_TEMP/package-check"
+          rm -rf "$check"
+          mkdir -p "$check"
+          ditto -x -k "dist/rust-commander-$VERSION-macos.zip" "$check"
+          rm -f "$RUNNER_TEMP/packaged.png"
+          env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$HOME" TMPDIR="$RUNNER_TEMP" \
+            QT_QPA_PLATFORM=offscreen \
+            "$check/rust-commander.app/Contents/MacOS/rust-commander" \
+            --render "$RUNNER_TEMP/packaged.png" --theme dark
+          test -s "$RUNNER_TEMP/packaged.png"
+          ls -la "$RUNNER_TEMP/packaged.png"
+
+      - name: Upload the package
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: dist/*.zip
+          name: rust-commander-${{ steps.version.outputs.version }}-macos
+          path: dist/rust-commander-${{ steps.version.outputs.version }}-macos.zip
           if-no-files-found: error
 
+  windows:
+    name: Build, test and package (Windows, x64)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      # PowerShell, not bash: at the start of a bash step the runner puts its
+      # GNU tools in front of the MSVC ones on the PATH, which can break
+      # linking (the README of msvc-dev-cmd explains this).
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.RC_QT_VERSION }}
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+          # See the macOS job: qtsvg is an archive here, not a module.
+          archives: 'qtbase qtsvg'
+
+      # windows-latest comes with Visual Studio 2026 by now. Its toolset is
+      # binary compatible with the msvc2022 package of Qt installed above, as
+      # Microsoft documents for all toolsets since Visual Studio 2015.
+      - name: Set up the MSVC build environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Read the version from the project
+        id: version
+        run: |
+          $text = Get-Content -Raw CMakeLists.txt
+          $match = [regex]::Match($text, '(?m)^project\(rust-commander VERSION (\d+(\.\d+)*)[) ]')
+          if (-not $match.Success) {
+            throw "No version was found in the project() call in CMakeLists.txt."
+          }
+          "version=$($match.Groups[1].Value)" >> $env:GITHUB_OUTPUT
+          Write-Host "The project's version is $($match.Groups[1].Value)."
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 120
+        env:
+          # Lets TestFileOps::trash run, which puts files into the Recycle Bin.
+          RC_TEST_TRASH: '1'
+
+      - name: Package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $stage = "dist/rust-commander"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item build/bin/rust-commander.exe $stage
+          # The Qt libraries and plugins the app uses.
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-translations --dir $stage build/bin/rust-commander.exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "windeployqt failed with exit code $LASTEXITCODE."
+          }
+          # The Visual C++ runtime, next to the program, so that the zip runs
+          # on a computer that hasn't installed it. (windeployqt's
+          # --compiler-runtime adds the installer instead, which doesn't help
+          # until someone runs it.)
+          $runtime = Get-ChildItem -Path "$env:VCToolsRedistDir\x64" -Directory -Filter "Microsoft.VC*.CRT" |
+            Select-Object -First 1
+          if (-not $runtime) {
+            throw "The Visual C++ runtime was not found under $env:VCToolsRedistDir."
+          }
+          Copy-Item -Path (Join-Path $runtime.FullName "*.dll") -Destination $stage
+          Compress-Archive -Path $stage -DestinationPath "dist/rust-commander-$env:VERSION-windows.zip" -Force
+          Get-ChildItem $stage | Format-Table Name, Length
+
+      - name: Upload the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-commander-${{ steps.version.outputs.version }}-windows
+          path: dist/rust-commander-${{ steps.version.outputs.version }}-windows.zip
+          if-no-files-found: error
+
+  # Only a pushed tag of the form v<version> makes a release. Nothing is
+  # released by pushing a branch.
   release:
     name: GitHub Release
-    needs: build
+    needs: [macos, windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
-      actions: read
-      contents: write
+      actions: read   # to fetch this run's packages
+      contents: write # to add them to the release
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.ref_name }}
     steps:
-      - name: Fetch this run's build archives
+      - name: Fetch this run's packages
         run: |
           mkdir -p dist
-          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir dist --pattern 'RustCommander-*'
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir dist --pattern 'rust-commander-*'
           # Each artifact lands in a folder of its own; keep the archives.
           find dist -mindepth 2 -name '*.zip' -exec mv {} dist/ \;
           find dist -mindepth 1 -type d -empty -delete
           ls -la dist
-          test "$(find dist -name '*.zip' | wc -l)" -eq 3
+          test "$(find dist -name '*.zip' | wc -l)" -eq 2
+          # The tag names the version the packages were built from: v0.2.0
+          # for 0.2.0. A tag that doesn't match would publish a release whose
+          # name says something else than what is in it.
+          version="${TAG#v}"
+          for platform in macos windows; do
+            if [ ! -f "dist/rust-commander-$version-$platform.zip" ]; then
+              echo "::error::Tag $TAG does not match the version the packages were built from."
+              exit 1
+            fi
+          done
 
-      - name: Attach the archives to the release, then check all three are there
+      - name: Attach the packages to the release, then check both are there
         run: |
           # Uploading once stopped half-way (v0.1.4 was published with two of
           # its three files), so it is retried and the result is checked.
@@ -150,4 +345,4 @@ jobs:
           fi
           count=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')
           echo "Files on the release: $count"
-          test "$count" -eq 3
+          test "$count" -eq 2
