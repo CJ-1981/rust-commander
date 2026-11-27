@@ -5,6 +5,7 @@
 #include "FileView.h"
 #include "PathBar.h"
 #include "app/Dialogs.h"
+#include "app/Icons.h"
 #include "ops/FileOps.h"
 #include "ops/OperationRunner.h"
 #include "ops/Shell.h"
@@ -25,12 +26,14 @@
 #include <QStyle>
 #include <QTabBar>
 #include <QTimer>
+#include <QToolBar>
 #include <QToolButton>
 #include <QVBoxLayout>
 
 namespace {
 
 constexpr int kChangeDelay = 150;  // ms to wait for the rest of a burst of changes
+constexpr int kIconSize = 16;      // the buttons in the row, in logical pixels
 
 QString tr(const char *text)
 {
@@ -41,15 +44,6 @@ QString tr(const char *text)
 QString counted(int count, const QString &singular, const QString &plural)
 {
     return QStringLiteral("%1 %2").arg(count).arg(count == 1 ? singular : plural);
-}
-
-// A button for an action; the action's text is its tool tip.
-QToolButton *buttonFor(QAction *action)
-{
-    auto *button = new QToolButton;
-    button->setDefaultAction(action);
-    button->setFocusPolicy(Qt::TabFocus);
-    return button;
 }
 
 // A line of text that gives up its end, with an ellipsis, when there is no
@@ -146,7 +140,9 @@ void PaneWidget::buildUi()
     m_tabs->setFocusPolicy(Qt::ClickFocus);
     tabRow->addWidget(m_tabs, 1);
     auto *add = new QToolButton;
-    add->setText(QStringLiteral("+"));
+    add->setObjectName("newTabButton");
+    Icons::setIcon(add, "plus");
+    add->setIconSize(QSize(kIconSize, kIconSize));  // alone, a button would take the style's smaller size
     add->setToolTip(tr("New tab (Ctrl+T)"));
     add->setFocusPolicy(Qt::TabFocus);
     tabRow->addWidget(add);
@@ -156,29 +152,37 @@ void PaneWidget::buildUi()
     m_path = new PathBar;
     layout->addWidget(m_path);
 
-    // The buttons
+    // The buttons. A tool bar gives what doesn't fit to a menu at its end,
+    // so the row doesn't decide how wide a pane has to be.
+    m_toolbar = new QToolBar;
+    m_toolbar->setObjectName("paneToolBar");
+    m_toolbar->setMovable(false);
+    m_toolbar->setFloatable(false);
+    m_toolbar->setFocusPolicy(Qt::NoFocus);  // its buttons are reached by Tab, it isn't a stop of its own
+    m_toolbar->setIconSize(QSize(kIconSize, kIconSize));
+    m_toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+
     m_openAction = new QAction(tr("Open"), this);
+    Icons::setIcon(m_openAction, "folder-open");
     m_terminalAction = new QAction(tr("Terminal"), this);
     m_terminalAction->setToolTip(tr("Open a terminal in this folder"));
-    auto *buttons = new QHBoxLayout;
-    buttons->setContentsMargins(4, 2, 4, 2);
-    buttons->setSpacing(2);
-    buttons->addWidget(buttonFor(m_openAction));
-    m_actionLayout = new QHBoxLayout;
-    m_actionLayout->setContentsMargins(0, 0, 0, 0);
-    m_actionLayout->setSpacing(2);
-    buttons->addLayout(m_actionLayout);
-    buttons->addWidget(buttonFor(m_terminalAction));
-    buttons->addStretch(1);
+    Icons::setIcon(m_terminalAction, "terminal");
+    addButton(m_openAction, nullptr, &PaneWidget::hasCursor);
+    addButton(m_terminalAction, nullptr, nullptr);
+
+    auto *row = new QHBoxLayout;
+    row->setContentsMargins(4, 2, 4, 2);
+    row->setSpacing(6);
+    row->addWidget(m_toolbar, 1);
     m_filter = new QLineEdit;
     m_filter->setObjectName("filter");
     m_filter->setPlaceholderText(tr("Filter (Ctrl+F)"));
     m_filter->setClearButtonEnabled(true);
-    m_filter->setMinimumWidth(70);
+    m_filter->setMinimumWidth(110);
     m_filter->setMaximumWidth(240);
     m_filter->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    buttons->addWidget(m_filter, 1);
-    layout->addLayout(buttons);
+    row->addWidget(m_filter);
+    layout->addLayout(row);
 
     // The files
     m_view = new FileView;
@@ -279,17 +283,84 @@ bool PaneWidget::canGoForward() const
     return tab().position >= 0 && tab().position + 1 < tab().history.size();
 }
 
-void PaneWidget::setActions(const QList<QAction *> &actions)
+bool PaneWidget::showsHidden() const
 {
-    m_actions = actions;
-    while (QLayoutItem *item = m_actionLayout->takeAt(0)) {
-        if (QWidget *widget = item->widget()) {
-            widget->deleteLater();
+    return m_proxy->showHidden();
+}
+
+void PaneWidget::setActions(const QList<Button> &buttons)
+{
+    // The row is made anew; this pane's versions of the window's actions go with it.
+    for (const Placed &placed : m_buttons) {
+        if (placed.window) {
+            placed.action->deleteLater();
         }
-        delete item;
     }
-    for (QAction *action : actions) {
-        m_actionLayout->addWidget(buttonFor(action));
+    m_toolbar->clear();
+    m_buttons.clear();
+    addButton(m_openAction, nullptr, &PaneWidget::hasCursor);
+    addButton(m_terminalAction, nullptr, nullptr);
+    if (!buttons.isEmpty()) {
+        m_toolbar->addSeparator();
+    }
+    for (const Button &button : buttons) {
+        if (button.action) {
+            addButton(ownAction(button.action), button.action, button.ready);
+        } else {
+            m_toolbar->addSeparator();
+        }
+    }
+    updateActions();
+}
+
+void PaneWidget::addButton(QAction *action, QAction *window, Ready ready)
+{
+    m_toolbar->addAction(action);
+    m_buttons.append({action, window, ready});
+    // The tool bar makes the button for an action when it is first asked for.
+    QWidget *button = m_toolbar->widgetForAction(action);
+    button->setFocusPolicy(Qt::TabFocus);
+    button->installEventFilter(this);
+}
+
+QAction *PaneWidget::ownAction(QAction *action)
+{
+    // The same to look at as the window's action, and under the same icon, so
+    // that a new theme finds this one too.
+    auto *own = new QAction(this);
+    own->setText(action->text());
+    own->setToolTip(action->toolTip());
+    own->setCheckable(action->isCheckable());
+    Icons::setIcon(own, Icons::nameOf(action));
+    connect(own, &QAction::triggered, this, [this, action] {
+        // The window's action goes by the pane that was used last: this one, from now on.
+        setActive(true);
+        emit activated(this);
+        action->trigger();
+        updateActions();
+    });
+    return own;
+}
+
+QToolButton *PaneWidget::buttonFor(const QAction *action) const
+{
+    for (const Placed &placed : m_buttons) {
+        if (placed.window == action) {
+            return qobject_cast<QToolButton *>(m_toolbar->widgetForAction(placed.action));
+        }
+    }
+    return nullptr;
+}
+
+void PaneWidget::updateActions()
+{
+    for (const Placed &placed : m_buttons) {
+        const bool ready = placed.ready ? (this->*placed.ready)() : true;
+        if (placed.action->isCheckable()) {
+            placed.action->setChecked(ready);
+        } else {
+            placed.action->setEnabled(ready);
+        }
     }
 }
 
@@ -808,6 +879,8 @@ void PaneWidget::selectAll()
 void PaneWidget::toggleHidden()
 {
     m_proxy->setShowHidden(!m_proxy->showHidden());
+    // A folder without hidden files lists the same as before, so nothing else would say.
+    updateActions();
 }
 
 void PaneWidget::toggleFolderSizes()
@@ -816,6 +889,7 @@ void PaneWidget::toggleFolderSizes()
     if (m_folderSizes) {
         m_model->requestFolderSizes();
     }
+    updateActions();
 }
 
 void PaneWidget::showFilter()
@@ -917,6 +991,9 @@ void PaneWidget::showContextMenu(const QPoint &position)
 
 void PaneWidget::updateStatus()
 {
+    // What the folder, the selection and the cursor are now decides what the buttons can do.
+    updateActions();
+
     const int rows = m_proxy->rowCount();
     int folders = 0;
     for (int row = 0; row < rows; ++row) {

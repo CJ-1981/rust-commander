@@ -1,0 +1,43 @@
+<!-- What is compiled into the app. The icons are read as text and colored for
+     the theme when they are loaded (src/app/Icons.cpp), which is why they are
+     SVG files here and not pixmaps. CMakeLists.txt takes the list of files
+     from here. -->
+<RCC>
+    <qresource prefix="/">
+        <file>icons/arrow-left-right.svg</file>
+        <file>icons/arrow-left.svg</file>
+        <file>icons/arrow-right.svg</file>
+        <file>icons/arrow-up.svg</file>
+        <file>icons/chevrons-left.svg</file>
+        <file>icons/chevrons-right.svg</file>
+        <file>icons/copy.svg</file>
+        <file>icons/corner-down-left.svg</file>
+        <file>icons/eraser.svg</file>
+        <file>icons/eye-off.svg</file>
+        <file>icons/eye.svg</file>
+        <file>icons/file-plus.svg</file>
+        <file>icons/folder-input.svg</file>
+        <file>icons/folder-open.svg</file>
+        <file>icons/folder-plus.svg</file>
+        <file>icons/folder-tree.svg</file>
+        <file>icons/hard-drive.svg</file>
+        <file>icons/house.svg</file>
+        <file>icons/info.svg</file>
+        <file>icons/list-checks.svg</file>
+        <file>icons/list-filter.svg</file>
+        <file>icons/log-out.svg</file>
+        <file>icons/plus.svg</file>
+        <file>icons/refresh-cw.svg</file>
+        <file>icons/square-pen.svg</file>
+        <file>icons/star.svg</file>
+        <file>icons/terminal.svg</file>
+        <file>icons/text-cursor-input.svg</file>
+        <file>icons/trash.svg</file>
+        <file>icons/x.svg</file>
+        <!-- The license texts shown in the About box. The Lucide text is the
+             same as icons/LICENSE.lucide; the LGPLv3 refers to the GPLv3. -->
+        <file>licenses/lucide.txt</file>
+        <file>licenses/qt-gpl-3.0.txt</file>
+        <file>licenses/qt-lgpl-3.0.txt</file>
+    </qresource>
+</RCC>

@@ -1,6 +1,8 @@
 #include "MainWindow.h"
 
+#include "AboutDialog.h"
 #include "Dialogs.h"
+#include "Icons.h"
 #include "Settings.h"
 #include "Theme.h"
 #include "ops/OperationRunner.h"
@@ -21,7 +23,6 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
-#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QSplitter>
 #include <QStatusBar>
@@ -135,9 +136,12 @@ PaneWidget *MainWindow::addPane()
 void MainWindow::createActions()
 {
     Actions &a = m_actions;
-    const auto make = [this](QAction **slot, const QString &text, const QList<QKeySequence> &keys,
-                             auto handler) {
+    // An action is made with the name of its icon, which stays with it: that
+    // is how the icons find their way when the theme changes.
+    const auto make = [this](QAction **slot, const char *icon, const QString &text,
+                             const QList<QKeySequence> &keys, auto handler) {
         QAction *action = new QAction(text, this);
+        Icons::setIcon(action, QLatin1String(icon));
         action->setShortcuts(keys);
         action->setToolTip(keys.isEmpty()
                                    ? text
@@ -151,55 +155,57 @@ void MainWindow::createActions()
     const auto pane = [this]() -> PaneWidget * { return m_active; };
 
     // The Total Commander keys; the function keys are shown along the bottom.
-    make(&a.open, tr("Open"), {}, [pane] { pane()->openCursor(); });
-    make(&a.view, tr("View"), {key("F3")}, [this, pane] { showViewer(pane()->cursorPath(), false); });
-    make(&a.edit, tr("Edit"), {key("F4")}, [this, pane] { showViewer(pane()->cursorPath(), true); });
-    make(&a.newFolder, tr("New folder"), {key("F7")}, [pane] { pane()->newFolder(); });
-    make(&a.newFile, tr("New file"), {key("Ctrl+N")}, [pane] { pane()->newFile(); });
-    make(&a.rename, tr("Rename"), {key("Shift+F6"), key("F2")}, [pane] { pane()->renameCursor(); });
-    make(&a.copy, tr("Copy"), {key("F5")}, [pane] { pane()->copyToOtherPane(); });
+    make(&a.open, "folder-open", tr("Open"), {}, [pane] { pane()->openCursor(); });
+    make(&a.view, "eye", tr("View"), {key("F3")}, [this, pane] { showViewer(pane()->cursorPath(), false); });
+    make(&a.edit, "square-pen", tr("Edit"), {key("F4")}, [this, pane] { showViewer(pane()->cursorPath(), true); });
+    make(&a.newFolder, "folder-plus", tr("New folder"), {key("F7")}, [pane] { pane()->newFolder(); });
+    make(&a.newFile, "file-plus", tr("New file"), {key("Ctrl+N")}, [pane] { pane()->newFile(); });
+    make(&a.rename, "text-cursor-input", tr("Rename"), {key("Shift+F6"), key("F2")},
+         [pane] { pane()->renameCursor(); });
+    make(&a.copy, "copy", tr("Copy"), {key("F5")}, [pane] { pane()->copyToOtherPane(); });
     a.copy->setToolTip(tr("Copy the selected items to the other pane (F5)"));
-    make(&a.move, tr("Move"), {key("F6")}, [pane] { pane()->moveToOtherPane(); });
+    make(&a.move, "folder-input", tr("Move"), {key("F6")}, [pane] { pane()->moveToOtherPane(); });
     a.move->setToolTip(tr("Move the selected items to the other pane (F6)"));
-    make(&a.trash, tr("Delete"), {key("F8"), key("Del")}, [pane] { pane()->deleteSelected(false); });
+    make(&a.trash, "trash", tr("Delete"), {key("F8"), key("Del")}, [pane] { pane()->deleteSelected(false); });
     a.trash->setToolTip(tr("Move the selected items to the Trash (F8)"));
-    make(&a.erase, tr("Delete for good"), {key("Shift+F8"), key("Shift+Del")},
+    make(&a.erase, "eraser", tr("Delete for good"), {key("Shift+F8"), key("Shift+Del")},
          [pane] { pane()->deleteSelected(true); });
     a.erase->setToolTip(tr("Delete the selected items for good (Shift+F8)"));
-    make(&a.terminal, tr("Open terminal here"), {key("Ctrl+Alt+T")},
+    make(&a.terminal, "terminal", tr("Open terminal here"), {key("Ctrl+Alt+T")},
          [pane] { pane()->openTerminalHere(); });
 
-    make(&a.back, tr("Back"), {key("Alt+Left")}, [pane] { pane()->goBack(); });
-    make(&a.forward, tr("Forward"), {key("Alt+Right")}, [pane] { pane()->goForward(); });
-    make(&a.up, tr("Up"), {key("Alt+Up")}, [pane] { pane()->goUp(); });
-    make(&a.home, tr("Home"), {key("Alt+Home")}, [pane] { pane()->goHome(); });
-    make(&a.typePath, tr("Type a path"), {key("Ctrl+G")}, [pane] { pane()->typePath(); });
-    make(&a.refresh, tr("Refresh"), {key("Ctrl+R")}, [pane] { pane()->refresh(); });
-    make(&a.filter, tr("Filter"), {key("Ctrl+F")}, [pane] { pane()->showFilter(); });
-    make(&a.selectAll, tr("Select all"), {key("Ctrl+A")}, [pane] { pane()->selectAll(); });
+    make(&a.back, "arrow-left", tr("Back"), {key("Alt+Left")}, [pane] { pane()->goBack(); });
+    make(&a.forward, "arrow-right", tr("Forward"), {key("Alt+Right")}, [pane] { pane()->goForward(); });
+    make(&a.up, "arrow-up", tr("Up"), {key("Alt+Up")}, [pane] { pane()->goUp(); });
+    make(&a.home, "house", tr("Home"), {key("Alt+Home")}, [pane] { pane()->goHome(); });
+    make(&a.typePath, "corner-down-left", tr("Type a path"), {key("Ctrl+G")}, [pane] { pane()->typePath(); });
+    make(&a.refresh, "refresh-cw", tr("Refresh"), {key("Ctrl+R")}, [pane] { pane()->refresh(); });
+    make(&a.filter, "list-filter", tr("Filter"), {key("Ctrl+F")}, [pane] { pane()->showFilter(); });
+    make(&a.selectAll, "list-checks", tr("Select all"), {key("Ctrl+A")}, [pane] { pane()->selectAll(); });
 
 #ifdef Q_OS_MACOS
     const char *hiddenKeys = "Ctrl+Shift+H";  // Cmd+H hides the app there
 #else
     const char *hiddenKeys = "Ctrl+H";
 #endif
-    a.hidden = make(nullptr, tr("Show hidden files"), {key(hiddenKeys)},
+    // An open eye once hidden files are shown; refreshActions() swaps them.
+    a.hidden = make(nullptr, "eye-off", tr("Show hidden files"), {key(hiddenKeys)},
                     [pane] { pane()->toggleHidden(); });
     a.hidden->setCheckable(true);
-    a.folderSizes = make(nullptr, tr("Show folder sizes"), {key("Ctrl+L")},
+    a.folderSizes = make(nullptr, "folder-tree", tr("Show folder sizes"), {key("Ctrl+L")},
                          [pane] { pane()->toggleFolderSizes(); });
     a.folderSizes->setCheckable(true);
 
-    make(&a.newTab, tr("New tab"), {key("Ctrl+T")}, [pane] { pane()->addTab(); });
-    make(&a.nextTab, tr("Next tab"), {key("Ctrl+Tab")}, [pane] { pane()->nextTab(); });
-    make(&a.previousTab, tr("Previous tab"), {key("Ctrl+Shift+Tab")},
+    make(&a.newTab, "plus", tr("New tab"), {key("Ctrl+T")}, [pane] { pane()->addTab(); });
+    make(&a.nextTab, "chevrons-right", tr("Next tab"), {key("Ctrl+Tab")}, [pane] { pane()->nextTab(); });
+    make(&a.previousTab, "chevrons-left", tr("Previous tab"), {key("Ctrl+Shift+Tab")},
          [pane] { pane()->previousTab(); });
-    make(&a.closeTab, tr("Close tab"), {key("Ctrl+W")}, [pane] { pane()->closeCurrentTab(); });
-    make(&a.swapPanes, tr("Swap panes"), {key("Ctrl+U")}, [this] {
+    make(&a.closeTab, "x", tr("Close tab"), {key("Ctrl+W")}, [pane] { pane()->closeCurrentTab(); });
+    make(&a.swapPanes, "arrow-left-right", tr("Swap panes"), {key("Ctrl+U")}, [this] {
         // The first pane goes to the end, which makes it the right one.
         m_splitter->addWidget(m_splitter->widget(0));
     });
-    make(&a.addFavorite, tr("Add this folder to the favorites"), {key("Ctrl+D")}, [this] {
+    make(&a.addFavorite, "star", tr("Add this folder to the favorites"), {key("Ctrl+D")}, [this] {
         const QString folder = m_active->directory();
         if (folder.isEmpty()) {
             return;
@@ -217,15 +223,10 @@ void MainWindow::createActions()
         updated.append(added);
         Settings::setBookmarks(updated);
     });
-    make(&a.about, tr("About Rust Commander"), {}, [this] {
-        QMessageBox::about(
-                this, tr("About Rust Commander"),
-                tr("<b>Rust Commander %1</b><br>A file manager with two panes, after Total "
-                   "Commander.<br><br>Made with Qt %2, which is free software under the GNU LGPL.")
-                        .arg(QLatin1String(APP_VERSION), QLatin1String(qVersion())));
-    });
+    make(&a.about, "info", tr("About Rust Commander"), {}, [this] { AboutDialog(this).exec(); });
 
     m_quit = new QAction(tr("Quit"), this);
+    Icons::setIcon(m_quit, "log-out");
     m_quit->setMenuRole(QAction::QuitRole);
     m_quit->setShortcuts({QKeySequence(QKeySequence::Quit), key("Ctrl+Q")});
     connect(m_quit, &QAction::triggered, this, &QWidget::close);
@@ -235,6 +236,28 @@ void MainWindow::createActions()
                                           a.trash,  a.erase,    a.newFolder, a.newFile, a.selectAll};
     m_left->setMenuActions(menuActions);
     m_right->setMenuActions(menuActions);
+
+    // What each pane's row of buttons holds, with what of that pane says
+    // whether there is something for the button to do.
+    const QList<PaneWidget::Button> row = {
+        {a.back, &PaneWidget::canGoBack},
+        {a.forward, &PaneWidget::canGoForward},
+        {a.up, nullptr},
+        {a.home, nullptr},
+        {a.refresh, nullptr},
+        {},  // a gap between the groups
+        {a.newFolder, nullptr},
+        {a.newFile, nullptr},
+        {a.rename, &PaneWidget::hasCursor},
+        {a.copy, &PaneWidget::hasSelection},
+        {a.move, &PaneWidget::hasSelection},
+        {a.trash, &PaneWidget::hasSelection},
+        {},
+        {a.hidden, &PaneWidget::showsHidden},
+        {a.folderSizes, &PaneWidget::showsFolderSizes},
+    };
+    m_left->setActions(row);
+    m_right->setActions(row);
 }
 
 void MainWindow::createMenus()
@@ -267,6 +290,7 @@ void MainWindow::createMenus()
     go->addAction(a.typePath);
     go->addSeparator();
     m_volumes = go->addMenu(tr("&Volumes"));
+    Icons::setIcon(m_volumes->menuAction(), "hard-drive");
     connect(m_volumes, &QMenu::aboutToShow, this, &MainWindow::fillVolumes);
     m_favorites = go->addMenu(tr("F&avorites"));
     connect(m_favorites, &QMenu::aboutToShow, this, &MainWindow::fillFavorites);
@@ -391,6 +415,8 @@ void MainWindow::refreshActions()
     m_actions.forward->setEnabled(pane->canGoForward());
     m_actions.hidden->setChecked(pane->files()->fileModel()->showHidden());
     m_actions.folderSizes->setChecked(pane->showsFolderSizes());
+    // An open eye over files that are shown, a closed one over files that are not.
+    Icons::setIcon(m_actions.hidden, m_actions.hidden->isChecked() ? "eye" : "eye-off");
 }
 
 void MainWindow::showViewer(const QString &path, bool edit)

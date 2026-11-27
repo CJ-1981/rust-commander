@@ -1,5 +1,7 @@
 #include "Theme.h"
 
+#include "Icons.h"
+
 #include <QApplication>
 #include <QGuiApplication>
 #include <QPalette>
@@ -108,6 +110,10 @@ QToolButton { border: 1px solid transparent; border-radius: 6px; padding: 5px; b
 QToolButton:hover { background: @hover@; }
 QToolButton:pressed, QToolButton:checked { background: @pressed@; }
 QToolButton::menu-indicator { image: none; }
+QToolBar#paneToolBar { padding: 2px 0; }
+QToolBar#paneToolBar QToolButton { padding: 2px; }
+QToolBar#paneToolBar::separator { width: 1px; background: @border@; margin: 4px; }
+QToolButton#newTabButton { padding: 2px; }
 
 QTabBar::tab { background: transparent; color: @muted@; padding: 5px 10px; margin-right: 2px;
                border: 1px solid transparent; border-bottom: none;
@@ -138,6 +144,7 @@ QLineEdit { border: 1px solid @border@; border-radius: 6px; padding: 4px 8px;
 QLineEdit:focus { border-color: @accent@; }
 QComboBox { border: 1px solid @border@; border-radius: 6px; padding: 4px 8px; background: @base@; }
 QComboBox:focus { border-color: @accent@; }
+QPlainTextEdit#licenseText { border: 1px solid @border@; border-radius: 6px; padding: 4px; background: @base@; }
 
 QMenuBar { background: transparent; }
 QMenuBar::item { padding: 4px 8px; border-radius: 4px; }
@@ -221,6 +228,8 @@ void apply(Mode mode)
     }
     QApplication::setPalette(makePalette(g_colors));
     qApp->setStyleSheet(fillIn(QString::fromUtf8(kStyleSheet), g_colors));
+    // The icons have the theme's colors in their pixmaps, so they are drawn again.
+    Icons::reload();
 }
 
 bool refreshSystem()

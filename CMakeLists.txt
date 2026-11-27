@@ -19,8 +19,12 @@ qt_standard_project_setup()
 
 # Everything except main() goes into a library, so the tests can use it too.
 add_library(app_core STATIC
+    src/app/AboutDialog.cpp
+    src/app/AboutDialog.h
     src/app/Dialogs.cpp
     src/app/Dialogs.h
+    src/app/Icons.cpp
+    src/app/Icons.h
     src/app/MainWindow.cpp
     src/app/MainWindow.h
     src/app/Settings.cpp
@@ -49,6 +53,17 @@ add_library(app_core STATIC
 target_link_libraries(app_core PUBLIC Qt6::Widgets Qt6::Concurrent Qt6::Svg)
 target_include_directories(app_core PUBLIC src)
 target_compile_definitions(app_core PUBLIC APP_VERSION="${PROJECT_VERSION}")
+
+# The icons and the license texts, compiled into the app as ":/icons/<name>.svg".
+# The files are listed in the .qrc file, and are handed to qt_add_resources from
+# there rather than given to it as that one file: the resources sit in a static
+# library, and the linker keeps of a static library only what is referred to.
+# qt_add_resources adds what refers to these.
+file(READ resources/resources.qrc resource_list)
+string(REGEX MATCHALL "<file>[^<]*</file>" resource_entries "${resource_list}")
+list(TRANSFORM resource_entries REPLACE "^<file>(.*)</file>$" "\\1")
+list(TRANSFORM resource_entries PREPEND "resources/")  # the paths in the file are relative to it
+qt_add_resources(app_core resources PREFIX "/" BASE resources FILES ${resource_entries})
 
 if(WIN32)
     # No console window behind the app on Windows.

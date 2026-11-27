@@ -20,11 +20,13 @@ class QModelIndex;
 class OperationRunner;
 class PathBar;
 class QTabBar;
+class QToolBar;
 class QToolButton;
 class QTimer;
 
-// One side of the window: a row of folder tabs, the path, buttons for what
-// can be done without function keys, the file table and a status line.
+// One side of the window: a row of folder tabs, the path, a row of icon
+// buttons for what can be done without function keys, the file table and a
+// status line.
 class PaneWidget : public QWidget {
     Q_OBJECT
     Q_PROPERTY(bool active READ isActive WRITE setActive)
@@ -43,15 +45,30 @@ public:
     QStringList tabPaths() const;
     bool canGoBack() const;
     bool canGoForward() const;
+    bool hasSelection() const { return !selectedPaths().isEmpty(); }
+    bool hasCursor() const { return !cursorPath().isEmpty(); }
+    bool showsHidden() const;
     FileView *files() const { return m_view; }
     QLineEdit *filterField() const { return m_filter; }
     QLabel *statusLabel() const { return m_status; }
 
-    // The actions the menus and shortcuts stand for; they are shown as
-    // buttons and in the context menu, and act on this pane.
-    void setActions(const QList<QAction *> &actions);
-    // Only for the context menu.
+    // What tells whether this pane has something for a button to do.
+    using Ready = bool (PaneWidget::*)() const;
+
+    // A button in this pane's row for one of the window's actions. An entry
+    // without an action is a gap between two groups of buttons.
+    struct Button {
+        QAction *action = nullptr;
+        Ready ready = nullptr;  // whether the button can be used; for one with a check mark, whether it is on
+    };
+    // Shows the window's actions as buttons in this pane's row, after its own
+    // two. They act on this pane, whichever pane was used last, and say
+    // whether this pane has something for them to do.
+    void setActions(const QList<Button> &buttons);
+    // The window's actions for the context menu.
     void setMenuActions(const QList<QAction *> &actions);
+    // The button in this pane's row for one of the window's actions; null when there is none.
+    QToolButton *buttonFor(const QAction *action) const;
     // The next tab round, the one before; closing the last one does nothing.
     void nextTab();
     void previousTab();
@@ -121,7 +138,21 @@ private:
         QStringList selected;
     };
 
+    // A button in the row: the action it shows, and the window's action it
+    // goes through to (null for one of the pane's own).
+    struct Placed {
+        QAction *action;
+        QAction *window;
+        Ready ready;
+    };
+
     void buildUi();
+    // Puts `action` in the row of buttons.
+    void addButton(QAction *action, QAction *window, Ready ready);
+    // This pane's version of one of the window's actions, for the row.
+    QAction *ownAction(QAction *action);
+    // Lets every button in the row say whether this pane has something for it to do.
+    void updateActions();
     Tab &tab();
     const Tab &tab() const;
     QString tabTitle(int index) const;
@@ -150,14 +181,15 @@ private:
     FileView *m_view;
     QTabBar *m_tabs;
     PathBar *m_path;
+    QToolBar *m_toolbar;
     QLineEdit *m_filter;
-    QHBoxLayout *m_actionLayout = nullptr;
     QLabel *m_status;
     QWidget *m_mark;          // the line over the tabs, for the pane that is active
     QFileSystemWatcher *m_watcher;
     QTimer *m_changeTimer;  // changes come in bursts; one refresh is enough
     QList<Tab> m_tabList;
-    QList<QAction *> m_actions;  // the window's, for the buttons and the context menu
+    QList<Placed> m_buttons;     // the buttons in the row, the pane's own first
+    QList<QAction *> m_actions;  // the window's, for the context menu
     QAction *m_openAction;
     QAction *m_terminalAction;
     QHash<QString, Selection> m_remembered;
