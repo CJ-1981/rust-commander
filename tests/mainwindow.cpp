@@ -594,7 +594,9 @@ void TestMainWindow::propertiesTellsWhatIsThere()
     PropertiesWindow one({f.a + "/one.txt"});
     QCOMPARE(one.windowTitle(), QStringLiteral("Properties"));
     QCOMPARE(one.titleText(), QStringLiteral("one.txt"));
-    QVERIFY(one.detailsText().contains(f.a + "/one.txt"));
+    // The path is shown as the system writes it, backslashes on Windows.
+    QVERIFY(one.detailsText().contains(QDir::fromNativeSeparators(
+        QDir::toNativeSeparators(f.a + "/one.txt"))));
     QVERIFY(one.sizeText().contains(QStringLiteral("1 byte")));
 
     // Several: counted, and measured together, the folder on a worker.
