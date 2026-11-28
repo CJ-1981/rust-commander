@@ -50,6 +50,7 @@ public:
         QAction *swapPanes = nullptr;
         QAction *addFavorite = nullptr;
         QAction *multiRename = nullptr;
+        QAction *search = nullptr;
         QAction *duplicates = nullptr;
         QAction *checksum = nullptr;
         QAction *about = nullptr;

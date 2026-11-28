@@ -11,6 +11,7 @@
 #include "panels/FileView.h"
 #include "panels/PaneWidget.h"
 #include "tools/ChecksumWindow.h"
+#include "tools/SearchWindow.h"
 #include "tools/DuplicatesWindow.h"
 #include "tools/MultiRenameWindow.h"
 #include "viewer/ViewerWindow.h"
@@ -188,6 +189,9 @@ void MainWindow::createActions()
     make(&a.duplicates, "copy", tr("Find duplicate files"), {key("Ctrl+Shift+D")}, [this, pane] {
         DuplicatesWindow::open(pane()->directory(), *m_dialogs, this);
     });
+    make(&a.search, "search", tr("Search files"), {key("Ctrl+F3")}, [this, pane] {
+        SearchWindow::open(pane()->directory(), *m_dialogs, this);
+    });
     make(&a.checksum, "list-checks", tr("Checksums"), {}, [this, pane] {
         // The file under the cursor is hashed, or checked against a checksum
         // file when it is one.
@@ -309,6 +313,7 @@ void MainWindow::createMenus()
     file->addSeparator();
     file->addAction(a.terminal);
     file->addSeparator();
+    file->addAction(a.search);
     file->addAction(a.multiRename);
     file->addAction(a.duplicates);
     file->addAction(a.checksum);
