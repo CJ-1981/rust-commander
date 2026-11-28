@@ -278,7 +278,7 @@ jobs:
               Write-Host "--- $name ended with exit code $($process.ExitCode)"
             }
             if (Test-Path $log) {
-              Select-String -Path $log -Pattern 'FAIL!|QFATAL|Totals:' | ForEach-Object { $_.Line }
+              Select-String -Path $log -Pattern 'FAIL!|QFATAL|Actual|Expected|Totals:' | ForEach-Object { $_.Line }
               Write-Host "--- $name, last lines:"
               Get-Content $log -Tail 3 | ForEach-Object { Write-Host $_ }
             }

@@ -128,8 +128,14 @@ std::optional<Checksums::Algorithm> algorithmForHex(const QString &text)
 
 Checksums::Entry entry(const QString &name, const QString &hash, Checksums::Algorithm algorithm)
 {
-    // As the file is read, with a leading "./" left out.
-    return Checksums::Entry{QDir::cleanPath(name), hash, algorithm};
+    // As the file is read, with a leading "./" left out. The rest stays as
+    // it was written, backslashes and all: a name written on Windows is
+    // looked for with slashes as well when its file is looked for.
+    QString clean = name;
+    if (clean.startsWith(QStringLiteral("./"))) {
+        clean.remove(0, 2);
+    }
+    return Checksums::Entry{clean, hash, algorithm};
 }
 
 // The reading of one file of a check, counted from what was read before it.
@@ -153,16 +159,21 @@ private:
     qint64 m_total;
 };
 
-// Where the file of an entry is: in `folder`, under its name. A name written
-// on Windows, with backslashes, is looked for with slashes too.
+// Where the file of an entry is: in `folder`, under its name, with the
+// folder as it was written. A name written on Windows, with backslashes, is
+// read there as the system writes paths; where a backslash can be a
+// character of a name, the name as written is tried first.
 QString filePathIn(const QString &folder, const QString &name)
 {
-    const QDir dir(folder);
-    const QString path = dir.absoluteFilePath(name);
-    if (!QFileInfo::exists(path) && name.contains(QLatin1Char('\\'))) {
-        return dir.absoluteFilePath(QString(name).replace(QLatin1Char('\\'), QLatin1Char('/')));
+    const QString join = folder.endsWith(QLatin1Char('/')) ? QString() : QStringLiteral("/");
+#ifdef Q_OS_WIN
+    return folder + join + QString(name).replace(QLatin1Char('\\'), QLatin1Char('/'));
+#else
+    if (!QFileInfo::exists(folder + join + name) && name.contains(QLatin1Char('\\'))) {
+        return folder + join + QString(name).replace(QLatin1Char('\\'), QLatin1Char('/'));
     }
-    return path;
+    return folder + join + name;
+#endif
 }
 
 }  // namespace

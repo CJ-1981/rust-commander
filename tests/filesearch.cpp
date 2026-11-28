@@ -37,6 +37,8 @@ QString makeTree()
     writeFile(base + "/a/notes.txt", "first version\n");
     writeFile(base + "/a/photo.jpg", QByteArray("photo v1"));
     writeFile(base + "/a/.secret", "hidden");
+    // On Windows a dot does not make a file hidden; the attribute does.
+    setHiddenAttribute(base + "/a/.secret");
     writeFile(base + "/a/report-2024.pdf", "report");
     writeFile(base + "/a/report-2023.pdf", "report");
     writeFile(base + "/a/deep/photo.jpg", QByteArray("photo v2"));
@@ -213,22 +215,35 @@ void TestFileSearch::aSearchWalksFoldersAndCanBeStopped()
     Query query;
     query.folders = {base};
 
-    // Everything that is not hidden: a, a/deep, b, empty, link-a, and the
-    // files in a, a/deep and b — the link itself is one more folder.
+    // Everything that is not hidden: a, a/deep, b, empty, link-a on the
+    // systems where the link is made, and the files in a, a/deep and b —
+    // the link itself is one more folder.
     const QStringList all = found(base, query);
+#ifdef Q_OS_UNIX
     QCOMPARE(all.size(), 12);
+#else
+    QCOMPARE(all.size(), 11);
+#endif
     QVERIFY(all.contains("a/notes.txt"));
     QVERIFY(all.contains("a/deep/photo.jpg"));
     QVERIFY(all.contains("b/notes.txt"));
 
     // Recursion off: only what is directly in the folder.
     query.recursive = false;
+#ifdef Q_OS_UNIX
     QCOMPARE(found(base, query), QStringList({"a", "b", "empty", "link-a"}));
+#else
+    QCOMPARE(found(base, query), QStringList({"a", "b", "empty"}));
+#endif
     query.recursive = true;
 
     // Folders only, files only.
     query.what = Query::What::Folders;
+#ifdef Q_OS_UNIX
     QCOMPARE(found(base, query).size(), 5);
+#else
+    QCOMPARE(found(base, query).size(), 4);
+#endif
     query.what = Query::What::Files;
     QCOMPARE(found(base, query).size(), 7);
     query.what = Query::What::Both;
