@@ -10,6 +10,8 @@
 #include "panels/FileProxyModel.h"
 #include "panels/FileView.h"
 #include "panels/PaneWidget.h"
+#include "tools/DuplicatesWindow.h"
+#include "tools/MultiRenameWindow.h"
 #include "viewer/ViewerWindow.h"
 
 #include <QActionGroup>
@@ -174,6 +176,18 @@ void MainWindow::createActions()
     make(&a.terminal, "terminal", tr("Open terminal here"), {key("Ctrl+Alt+T")},
          [pane] { pane()->openTerminalHere(); });
 
+    // The tools act on this pane's selection and folder.
+    make(&a.multiRename, "square-pen", tr("Multi-rename"), {key("Ctrl+M")}, [this, pane] {
+        QStringList files = pane()->selectedPaths();
+        if (files.isEmpty() && !pane()->cursorPath().isEmpty()) {
+            files = {pane()->cursorPath()};
+        }
+        MultiRenameWindow::open(files, *m_dialogs, this);
+    });
+    make(&a.duplicates, "copy", tr("Find duplicate files"), {key("Ctrl+Shift+D")}, [this, pane] {
+        DuplicatesWindow::open(pane()->directory(), *m_dialogs, this);
+    });
+
     make(&a.back, "arrow-left", tr("Back"), {key("Alt+Left")}, [pane] { pane()->goBack(); });
     make(&a.forward, "arrow-right", tr("Forward"), {key("Alt+Right")}, [pane] { pane()->goForward(); });
     make(&a.up, "arrow-up", tr("Up"), {key("Alt+Up")}, [pane] { pane()->goUp(); });
@@ -286,6 +300,9 @@ void MainWindow::createMenus()
     file->addAction(a.erase);
     file->addSeparator();
     file->addAction(a.terminal);
+    file->addSeparator();
+    file->addAction(a.multiRename);
+    file->addAction(a.duplicates);
     file->addSeparator();
     file->addAction(a.closeTab);
     file->addAction(m_quit);

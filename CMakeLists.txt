@@ -49,6 +49,14 @@ add_library(app_core STATIC
     src/ops/Shell.h
     src/viewer/ViewerWindow.cpp
     src/viewer/ViewerWindow.h
+    src/tools/DuplicateFinder.cpp
+    src/tools/DuplicateFinder.h
+    src/tools/DuplicatesWindow.cpp
+    src/tools/DuplicatesWindow.h
+    src/tools/MultiRenameWindow.cpp
+    src/tools/MultiRenameWindow.h
+    src/tools/RenameRules.cpp
+    src/tools/RenameRules.h
 )
 target_link_libraries(app_core PUBLIC Qt6::Widgets Qt6::Concurrent Qt6::Svg)
 target_include_directories(app_core PUBLIC src)
@@ -108,7 +116,8 @@ include(CTest)
 set(CTEST_TEST_TIMEOUT 60)
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
-    set(APP_TESTS filemodel fileview fileops shell operationrunner pathbar panewidget mainwindow viewer)
+    set(APP_TESTS filemodel fileview fileops shell operationrunner pathbar panewidget mainwindow viewer
+                  multirename duplicates)
     foreach(test IN LISTS APP_TESTS)
         add_executable(test_${test} tests/${test}.cpp)
         target_link_libraries(test_${test} PRIVATE app_core Qt6::Test)

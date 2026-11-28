@@ -49,6 +49,8 @@ public:
         QAction *closeTab = nullptr;
         QAction *swapPanes = nullptr;
         QAction *addFavorite = nullptr;
+        QAction *multiRename = nullptr;
+        QAction *duplicates = nullptr;
         QAction *about = nullptr;
     };
 
