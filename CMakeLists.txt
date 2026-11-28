@@ -53,6 +53,10 @@ add_library(app_core STATIC
     src/tools/Checksums.h
     src/tools/ChecksumWindow.cpp
     src/tools/ChecksumWindow.h
+    src/tools/CompareWindow.cpp
+    src/tools/CompareWindow.h
+    src/tools/LineDiff.cpp
+    src/tools/LineDiff.h
     src/tools/DuplicateFinder.cpp
     src/tools/DuplicateFinder.h
     src/tools/DuplicatesWindow.cpp
@@ -125,7 +129,7 @@ set(CTEST_TEST_TIMEOUT 60)
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
     set(APP_TESTS filemodel fileview fileops shell operationrunner pathbar panewidget mainwindow viewer
-                  multirename duplicates checksum filesearch)
+                  multirename duplicates checksum filesearch compare)
     foreach(test IN LISTS APP_TESTS)
         add_executable(test_${test} tests/${test}.cpp)
         target_link_libraries(test_${test} PRIVATE app_core Qt6::Test)

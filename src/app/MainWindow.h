@@ -53,6 +53,7 @@ public:
         QAction *search = nullptr;
         QAction *duplicates = nullptr;
         QAction *checksum = nullptr;
+        QAction *compare = nullptr;
         QAction *about = nullptr;
     };
 

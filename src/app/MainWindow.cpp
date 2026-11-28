@@ -11,6 +11,7 @@
 #include "panels/FileView.h"
 #include "panels/PaneWidget.h"
 #include "tools/ChecksumWindow.h"
+#include "tools/CompareWindow.h"
 #include "tools/SearchWindow.h"
 #include "tools/DuplicatesWindow.h"
 #include "tools/MultiRenameWindow.h"
@@ -199,6 +200,12 @@ void MainWindow::createActions()
                                                             : pane()->cursorPath(),
                              *m_dialogs, this);
     });
+    // Two selected files are compared; with less chosen, the window opens
+    // with what there is and the sides are filled in there.
+    make(&a.compare, "git-compare", tr("Compare files"), {}, [this, pane] {
+        const QStringList files = pane()->selectedPaths();
+        CompareWindow::open(files.value(0), files.value(1), *m_dialogs, this);
+    });
 
     make(&a.back, "arrow-left", tr("Back"), {key("Alt+Left")}, [pane] { pane()->goBack(); });
     make(&a.forward, "arrow-right", tr("Forward"), {key("Alt+Right")}, [pane] { pane()->goForward(); });
@@ -317,6 +324,7 @@ void MainWindow::createMenus()
     file->addAction(a.multiRename);
     file->addAction(a.duplicates);
     file->addAction(a.checksum);
+    file->addAction(a.compare);
     file->addSeparator();
     file->addAction(a.closeTab);
     file->addAction(m_quit);
