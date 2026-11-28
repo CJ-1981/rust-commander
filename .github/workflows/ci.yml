@@ -265,7 +265,11 @@ jobs:
         if: failure() && steps.test.outcome == 'failure'
         run: |
           foreach ($name in @("fileops", "operationrunner", "panewidget", "filemodel", "fileview", "shell", "mainwindow", "viewer", "pathbar")) {
-            $exe = (Resolve-Path "build\test_$name.exe").Path
+            $exe = Join-Path $PWD "build\bin\test_$name.exe"
+            if (-not (Test-Path $exe)) {
+              Write-Host "--- $name : no program at $exe"
+              continue
+            }
             $log = Join-Path $PWD "build\$name.log"
             Remove-Item $log -ErrorAction SilentlyContinue
             $process = Start-Process -FilePath $exe -ArgumentList "-o", "`"$log,txt`"" -PassThru -NoNewWindow
