@@ -263,16 +263,14 @@ jobs:
       # code say which test it died in.
       - name: Why did a test fail?
         if: failure() && steps.test.outcome == 'failure'
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: |
-          foreach ($name in @("fileops", "operationrunner", "panewidget", "filemodel", "fileview", "shell", "mainwindow", "viewer", "pathbar")) {
-            $exe = Join-Path $PWD "build\bin\test_$name.exe"
-            if (-not (Test-Path $exe)) {
-              Write-Host "--- $name : no program at $exe"
-              continue
-            }
+          foreach ($exe in (Get-ChildItem "build\bin\test_*.exe" | Sort-Object Name)) {
+            $name = $exe.BaseName.Substring(5)
             $log = Join-Path $PWD "build\$name.log"
             Remove-Item $log -ErrorAction SilentlyContinue
-            $process = Start-Process -FilePath $exe -ArgumentList "-o", "`"$log,txt`"" -PassThru -NoNewWindow
+            $process = Start-Process -FilePath $exe.FullName -ArgumentList "-o", "`"$log,txt`"" -PassThru -NoNewWindow
             if (-not $process.WaitForExit(120000)) {
               $process.Kill()
               Write-Host "--- $name did not end within two minutes and was killed"
@@ -281,6 +279,8 @@ jobs:
             }
             if (Test-Path $log) {
               Select-String -Path $log -Pattern 'FAIL!|QFATAL|Totals:' | ForEach-Object { $_.Line }
+              Write-Host "--- $name, last lines:"
+              Get-Content $log -Tail 3 | ForEach-Object { Write-Host $_ }
             }
           }
 
