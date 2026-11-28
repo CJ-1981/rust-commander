@@ -213,10 +213,12 @@ void TestOperationRunner::asksAboutExistingTargetsOnTheGuiThread()
     // The third is not asked about any more, after "Skip all". The question
     // names the files as the system writes paths there.
     QCOMPARE(f.dialogs.asked, 2);
+    QCOMPARE(f.dialogs.asked, 2);
     const QStringList asked = f.dialogs.targets;
     QCOMPARE(asked.size(), 2);
-    QCOMPARE(QDir::fromNativeSeparators(asked.at(0)), f.target() + "/f000.txt");
-    QCOMPARE(QDir::fromNativeSeparators(asked.at(1)), f.target() + "/f001.txt");
+    // The question names the files as the system writes paths there.
+    QCOMPARE(QDir::fromNativeSeparators(asked.value(0)), f.target() + "/f000.txt");
+    QCOMPARE(QDir::fromNativeSeparators(asked.value(1)), f.target() + "/f001.txt");
     QCOMPARE(f.read("f000.txt"), QString("new"));
     QCOMPARE(f.read("f001.txt"), QString("old"));
     QCOMPARE(f.read("f002.txt"), QString("old"));
