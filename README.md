@@ -1,6 +1,6 @@
 # Rust Commander
 
-A dual-pane file manager for macOS and Windows, in the spirit of Total Commander: two file lists side by side, driven by the keyboard, with a viewer and an editor built in.
+A dual-pane file manager for macOS and Windows, in the spirit of Total Commander: two file lists side by side, driven by the keyboard, with a viewer, an editor and a set of tools — search, multi-rename, duplicate finder, checksums, file comparison — built in.
 
 The name has stayed, although this version is no longer written in Rust: it is C++20 with Qt 6. The earlier Rust/egui version is on the `main` branch, and the releases up to and including v0.1.9 are that version.
 
@@ -39,6 +39,16 @@ The commander core ("Milestone 1") lives on the `qt` branch. **The Qt version ha
 - A live filter (`Ctrl+F`): only the names containing all the typed words are listed.
 - The path bar shows the folder as buttons to click through. Clicking empty space in it, or typing, turns it into a field: `~` and paths relative to the folder shown are understood, folder names are completed while typing, `Enter` goes there and `Esc` gives up.
 - A folder refreshes by itself when other programs change it.
+
+### The tools
+
+The File menu gathers the tools. Each works on the folder shown and the selection of the active pane.
+
+- **Search files** (`Ctrl+F3`): finds files and folders by name, and on request by what is in them — plain text or a regular expression — with limits on size and on the date modified, hidden files included or not, and a cap on how much is found. The search runs on a worker thread; results arrive while it goes. From the results: open, show the file in its folder, copy.
+- **Multi-rename** (`Ctrl+M`): renames many files at once. A mask says what the new name is made of — the old name and extension in ranges (`[N2-5]`), a counter (`[C10+5:3]`), the parts of the file's date (`[Y][M][D]`), and upper, lower or capitalized from a point on (`[U]`, `[L]`, `[F]`) — then find and replace (regular expressions with groups), underscores, and the case. A preview lists what every name will become before anything is applied.
+- **Find duplicate files** (`Ctrl+Shift+D`): files with the same content are grouped, told apart first by size, then by a taste of their bytes, then by a full hash. Marking chooses what stays; the marked files are removed, to the Trash or for good, and only while they are still what was scanned.
+- **Checksums**: hashes files and folders — MD5, SHA-1, SHA-256, SHA-512 or CRC32 — and checks files against a checksum file in the shape `sha256sum` writes: the sum, two spaces, the name.
+- **Compare files**: two texts side by side with the lines that differ tinted and the parts that differ marked. *Next* and *Previous difference* walk the changes, the sides can be swapped, and spaces at the end of a line, line endings and blank lines can be ignored. Two files selected in a pane are compared right away; with less chosen, the window opens with the fields to fill in.
 
 ### Around it
 
@@ -104,6 +114,9 @@ In the path field, `Enter` goes to the typed path and `Esc` returns to the folde
 | `Ctrl`+`Alt`+`T` | Open a terminal in the folder shown |
 | `F3`, `F4` | View, edit: the item under the cursor |
 | `Ctrl`+`S` | Save in the editor |
+| `Ctrl`+`F3` | Search files |
+| `Ctrl`+`M` | Multi-rename the selection |
+| `Ctrl`+`Shift`+`D` | Find duplicate files in the folder shown |
 | `Ctrl`+`Q` | Quit |
 
 ### With the mouse
