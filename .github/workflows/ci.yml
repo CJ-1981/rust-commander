@@ -251,10 +251,32 @@ jobs:
         run: cmake --build build
 
       - name: Test
+        id: test
         run: ctest --test-dir build --output-on-failure --timeout 120
         env:
           # Lets TestFileOps::trash run, which puts files into the Recycle Bin.
           RC_TEST_TRASH: '1'
+
+      # A test program that crashes loses whatever it had not written yet,
+      # and with it every clue. So each one is run again, writing its log to
+      # a file as it goes, which does survive; the last lines and the exit
+      # code say which test it died in.
+      - name: Why did a test fail?
+        if: failure() && steps.test.outcome == 'failure'
+        run: |
+          foreach ($name in @("fileops", "operationrunner", "panewidget", "filemodel", "fileview", "shell", "mainwindow", "viewer", "pathbar")) {
+            $exe = (Resolve-Path "build\test_$name.exe").Path
+            $log = Join-Path $PWD "build\$name.log"
+            Remove-Item $log -ErrorAction SilentlyContinue
+            $process = Start-Process -FilePath $exe -ArgumentList "-o", "`"$log,txt`"" -PassThru -NoNewWindow
+            if (-not $process.WaitForExit(120000)) {
+              $process.Kill()
+              Write-Host "--- $name did not end within two minutes and was killed"
+            } else {
+              Write-Host "--- $name ended with exit code $($process.ExitCode)"
+            }
+            if (Test-Path $log) { Get-Content $log -Tail 14 }
+          }
 
       - name: Package
         env:
