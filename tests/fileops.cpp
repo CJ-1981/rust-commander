@@ -10,6 +10,7 @@
 #include "helpers.h"
 #include "ops/FileOps.h"
 
+#include <algorithm>
 #include <filesystem>
 #ifdef Q_OS_MACOS
 #include <sys/xattr.h>
@@ -180,7 +181,13 @@ void TestFileOps::mergesIntoAFolderOfTheSameName()
     QCOMPARE(error, QString());
     QCOMPARE(readFile(f.target + "/sub/b.txt"), QString("the new one"));
     QCOMPARE(readFile(f.target + "/sub/d.txt"), QString("keep"));
-    QVERIFY(answers.targets.contains(f.target + "/sub/b.txt"));
+    // The names come back as the system writes paths there.
+    const bool bWasAskedAbout = std::any_of(answers.targets.cbegin(), answers.targets.cend(),
+                                            [&](const QString &asked) {
+                                                return QDir::fromNativeSeparators(asked)
+                                                       == f.target + "/sub/b.txt";
+                                            });
+    QVERIFY(bWasAskedAbout);
 }
 
 void TestFileOps::overwriteChoices()
