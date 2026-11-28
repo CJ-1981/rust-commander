@@ -587,6 +587,11 @@ void TestPaneWidget::reviewNothingIsDoneToTheFolderLeftBehind()
 // Another program removes the folder the pane shows.
 void TestPaneWidget::reviewTheFolderShownIsRemovedByAnotherProgram()
 {
+#ifdef Q_OS_WIN
+    // A folder that a QFileSystemWatcher is watching can't be removed there
+    // while it is watched: the scenario doesn't come up.
+    QSKIP("Windows holds the watched folder open");
+#endif
     Fixture f;
     QVERIFY(f.ready);
     QVERIFY(QDir().rmdir(f.path("a/b/c")));
