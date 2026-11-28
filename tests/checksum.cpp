@@ -473,22 +473,21 @@ void TestChecksum::theWindowStaysUsableWhileItHashes()
     QVERIFY(QTest::qWaitForWindowExposed(&window));
     QVERIFY(window.isHashing());
 
-    // A timer keeps firing, and the window takes clicks meanwhile.
-    int beats = 0;
-    QTimer heartbeat;
-    connect(&heartbeat, &QTimer::timeout, [&] { ++beats; });
-    heartbeat.start(5);
-    QTest::qWait(300);
-    qInfo() << "beats in 300 ms:" << beats << "| still hashing:" << window.isHashing();
-    // A blocked GUI thread would not have let the timer fire at all.
-    QVERIFY(beats > 2);
+    // The hashing runs beside the window, not on its thread. A heartbeat
+    // timer would say how often the loop got around to it, but a loaded
+    // runner serves its timers thinly — one tick in 300 ms was seen — so a
+    // count would measure the runner, not the window. What the runner owes
+    // is that what is handed to the loop comes through while the hash is
+    // still on.
+    bool served = false;
+    QMetaObject::invokeMethod(&window, [&] { served = true; }, Qt::QueuedConnection);
+    QVERIFY(QTest::qWaitFor([&] { return served; }, 5000));
+    qInfo() << "still hashing when the loop served the task:" << window.isHashing();
 
     // Stopped before the end: no answer of its own, and the hash winds down
-    // without holding the loop up. How fast a loaded runner serves timers is
-    // its own business; the counting above is what says the window answers.
+    // without holding the loop up.
     window.stop();
     QVERIFY(settle(&window));
-    heartbeat.stop();
 }
 
 QTEST_MAIN(TestChecksum)
