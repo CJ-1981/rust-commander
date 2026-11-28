@@ -4,6 +4,7 @@
 #include <QStringList>
 
 class QAction;
+class CommandLine;
 class QActionGroup;
 class QLabel;
 class QMenu;
@@ -55,6 +56,11 @@ public:
         QAction *checksum = nullptr;
         QAction *compare = nullptr;
         QAction *about = nullptr;
+        QAction *commandLine = nullptr;
+        QAction *hotlist = nullptr;
+        QAction *selectGroup = nullptr;
+        QAction *unselectGroup = nullptr;
+        QAction *properties = nullptr;
     };
 
     // `dialogs` gets the questions; without it, window dialogs are shown.
@@ -86,6 +92,9 @@ private:
     void transfer(PaneWidget *from, const QStringList &paths, bool move);
     // Enables what the active pane can do, and marks what is on there.
     void refreshActions();
+    void createCommandLine();
+    // Marks or unmarks the rows the Select group dialog names.
+    void selectGroup(bool select);
     void showViewer(const QString &path, bool edit);
     void fillVolumes();
     void fillFavorites();
@@ -102,6 +111,8 @@ private:
     QMenu *m_volumes = nullptr;
     QMenu *m_favorites = nullptr;
     QActionGroup *m_theme = nullptr;
+    CommandLine *m_commandLine = nullptr;
+    void runCommandLine();
     QWidget *m_keyRow = nullptr;
     bool m_dividerJustReset = false;  // the release after a double-click on the divider is swallowed
     QAction *m_quit = nullptr;

@@ -13,9 +13,11 @@
 #include <QDropEvent>
 #include <QHeaderView>
 #include <QItemSelectionModel>
+#include <QLabel>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QRegularExpression>
 #include <QPixmap>
 #include <QScrollBar>
 #include <QStyleOptionViewItem>
@@ -399,6 +401,35 @@ void FileView::keyPressEvent(QKeyEvent *event)
         return;
     }
 #endif
+    // While the quick search is up, the keys belong to it: letters go on
+    // narrowing, Backspace takes the last letter off, Enter keeps what it
+    // found, Escape puts the cursor back. Anything else closes the search
+    // and is used as it always is.
+    if (m_quickSearch && m_quickSearch->isVisible()) {
+        if (event->modifiers() == Qt::NoModifier) {
+            switch (event->key()) {
+            case Qt::Key_Backspace:
+                quickSearchBackspace();
+                return;
+            case Qt::Key_Return:
+            case Qt::Key_Enter:
+                quickSearchClose(false);
+                return;
+            case Qt::Key_Escape:
+                quickSearchClose(true);
+                return;
+            default:
+                break;
+            }
+            const QString text = event->text();
+            if (text.size() == 1 && text.at(0).isPrint() && !text.at(0).isSpace()) {
+                quickSearchAppend(text.at(0));
+                return;
+            }
+        }
+        quickSearchClose(false);
+    }
+
     if (event->modifiers() == Qt::NoModifier) {
         switch (event->key()) {
         case Qt::Key_Backspace:
@@ -431,8 +462,115 @@ void FileView::keyPressEvent(QKeyEvent *event)
         default:
             break;
         }
+        // A letter starts the quick search; everything else stays as it was.
+        const QString text = event->text();
+        if (text.size() == 1 && text.at(0).isPrint() && !text.at(0).isSpace()
+            && model() && model()->rowCount() > 0) {
+            openQuickSearch(text.at(0));
+            return;
+        }
     }
     QTableView::keyPressEvent(event);
+}
+
+// ---- quick search ----
+
+bool FileView::quickMatches(const QString &name, const QString &pattern)
+{
+    if (pattern.contains(u'*') || pattern.contains(u'?')) {
+        return QRegularExpression::fromWildcard(pattern, Qt::CaseInsensitive,
+                                                QRegularExpression::UnanchoredWildcardConversion)
+            .match(name)
+            .hasMatch();
+    }
+    return name.contains(pattern, Qt::CaseInsensitive);
+}
+
+void FileView::openQuickSearch(const QChar &first)
+{
+    const QModelIndex current = currentIndex();
+    m_quickStart = current.isValid() ? current.row() : -1;
+    m_quickCursor = m_quickStart;
+    m_quickPattern = first;
+    if (!m_quickSearch) {
+        m_quickSearch = new QLabel(viewport());
+        m_quickSearch->setObjectName("quickSearch");
+        m_quickSearch->setAutoFillBackground(true);
+        m_quickSearch->setFocusPolicy(Qt::NoFocus);
+        m_quickSearch->setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_quickSearch->setStyleSheet(QStringLiteral("QLabel#quickSearch {"
+                                                    " background: palette(window); color: palette(text);"
+                                                    " border: 1px solid palette(mid); border-radius: 6px;"
+                                                    " padding: 3px 10px; }"));
+    }
+    m_quickSearch->show();
+    m_quickSearch->raise();
+    quickSearchFind(false);
+}
+
+void FileView::quickSearchAppend(const QChar &next)
+{
+    m_quickPattern.append(next);
+    quickSearchFind(false);
+}
+
+void FileView::quickSearchBackspace()
+{
+    m_quickPattern.chop(1);
+    if (m_quickPattern.isEmpty()) {
+        quickSearchClose(true);
+        return;
+    }
+    quickSearchFind(true);
+}
+
+void FileView::quickSearchClose(bool restore)
+{
+    if (restore && m_quickStart >= 0) {
+        const QModelIndex back = model()->index(m_quickStart, 0);
+        if (back.isValid()) {
+            selectionModel()->setCurrentIndex(back, QItemSelectionModel::NoUpdate);
+            scrollTo(back);
+        }
+    }
+    if (m_quickSearch) {
+        m_quickSearch->hide();
+    }
+    m_quickPattern.clear();
+    m_quickStart = -1;
+    m_quickCursor = -1;
+}
+
+void FileView::quickSearchFind(bool fromStart)
+{
+    QAbstractItemModel *list = model();
+    if (!list || list->rowCount() == 0) {
+        return;
+    }
+    const int rows = list->rowCount();
+    // Every letter searches from where the search began, so that what is
+    // typed narrows towards the first answer instead of walking on.
+    const int from = qBound(-1, m_quickStart, rows - 1);
+    int found = -1;
+    for (int step = 1; step <= rows; ++step) {
+        const int row = (from + step) % rows;
+        if (quickMatches(list->index(row, 0).data().toString(), m_quickPattern)) {
+            found = row;
+            break;
+        }
+    }
+    if (found >= 0) {
+        const QModelIndex foundIndex = list->index(found, 0);
+        selectionModel()->setCurrentIndex(foundIndex, QItemSelectionModel::NoUpdate);
+        scrollTo(foundIndex);
+        m_quickCursor = found;
+    }
+    const QString foundText =
+            found >= 0 ? QString() : QStringLiteral("  ·  ") + tr("nothing like this");
+    m_quickSearch->setText(QStringLiteral("<b>%1</b>%2").arg(m_quickPattern.toHtmlEscaped(), foundText));
+    m_quickSearch->adjustSize();
+    m_quickSearch->move(viewport()->width() - m_quickSearch->width() - 12,
+                        viewport()->height() - m_quickSearch->height() - 12);
 }
 
 QModelIndex FileView::moveCursor(CursorAction cursorAction, Qt::KeyboardModifiers modifiers)

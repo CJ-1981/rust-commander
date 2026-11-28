@@ -25,6 +25,8 @@ add_library(app_core STATIC
     src/app/Dialogs.h
     src/app/Icons.cpp
     src/app/Icons.h
+    src/app/CommandLine.cpp
+    src/app/CommandLine.h
     src/app/MainWindow.cpp
     src/app/MainWindow.h
     src/app/Settings.cpp
@@ -39,6 +41,8 @@ add_library(app_core STATIC
     src/panels/FileView.h
     src/panels/PaneWidget.cpp
     src/panels/PaneWidget.h
+    src/panels/SelectGroupDialog.cpp
+    src/panels/SelectGroupDialog.h
     src/panels/PathBar.cpp
     src/panels/PathBar.h
     src/ops/FileOps.cpp
@@ -65,6 +69,8 @@ add_library(app_core STATIC
     src/tools/FileSearch.h
     src/tools/MultiRenameWindow.cpp
     src/tools/MultiRenameWindow.h
+    src/tools/PropertiesWindow.cpp
+    src/tools/PropertiesWindow.h
     src/tools/SearchWindow.cpp
     src/tools/SearchWindow.h
     src/tools/RenameRules.cpp
@@ -129,7 +135,7 @@ set(CTEST_TEST_TIMEOUT 60)
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
     set(APP_TESTS filemodel fileview fileops shell operationrunner pathbar panewidget mainwindow viewer
-                  multirename duplicates checksum filesearch compare dialogs)
+                  multirename duplicates checksum filesearch compare dialogs commandline)
     foreach(test IN LISTS APP_TESTS)
         add_executable(test_${test} tests/${test}.cpp)
         target_link_libraries(test_${test} PRIVATE app_core Qt6::Test)

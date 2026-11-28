@@ -34,6 +34,9 @@ public:
     // Whether the folders in the listing have their sizes computed.
     static bool folderSizes();
     static void setFolderSizes(bool compute);
+    // What was run from the command line, oldest first.
+    static QStringList commandHistory();
+    static void setCommandHistory(const QStringList &history);
 
     // The folders open in each pane's tabs, left to right.
     static QStringList tabPaths(int pane);

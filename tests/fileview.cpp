@@ -170,6 +170,8 @@ private slots:
     void rubberBandSelects();
     void doubleClickAndEnterOpen();
     void insertAndSpaceMarkAndMoveDown();
+    void typingOpensTheQuickSearchAndJumps();
+    void theQuickSearchTakesWildcardsAndEscapeGoesBack();
     void arrowsSelectOneRowShiftExtends();
     void rightClickSelectsRowForMenu();
     void dropLandsInFolderUnderPointer();
@@ -362,6 +364,57 @@ void TestFileView::insertAndSpaceMarkAndMoveDown()
     QTest::keyClick(&f.view, Qt::Key_Space);
     QCOMPARE(f.selected(), QStringList({"file09.txt"}));
     QCOMPARE(f.currentName(), QString("file09.txt"));
+}
+
+void TestFileView::typingOpensTheQuickSearchAndJumps()
+{
+    Fixture f;
+    QVERIFY(f.listed);
+    QCOMPARE(f.view.currentIndex().row(), 0);
+
+    // Typing letters opens the small field and jumps to what answers.
+    QTest::keyClicks(&f.view, "file0");
+    QCOMPARE(f.view.currentIndex().row(), f.rowOf("file00.txt"));
+    QVERIFY(f.view.findChild<QLabel *>());
+    QVERIFY(f.view.findChild<QLabel *>()->isVisible());
+
+    // Enter keeps what it found, and the keys act as themselves again.
+    QTest::keyClick(&f.view, Qt::Key_Return);
+    QVERIFY(!f.view.findChild<QLabel *>()->isVisible());
+    QCOMPARE(f.view.currentIndex().row(), f.rowOf("file00.txt"));
+    QTest::keyClick(&f.view, Qt::Key_Space);
+    // Space marks, as it does when the quick search never was: the cursor
+    // moves down one row, the mark stays where it was.
+    QCOMPARE(f.view.selectionModel()->selectedRows().size(), 1);
+    QVERIFY(f.view.selectionModel()->isSelected(f.view.model()->index(f.rowOf("file00.txt"), 0)));
+}
+
+void TestFileView::theQuickSearchTakesWildcardsAndEscapeGoesBack()
+{
+    Fixture f;
+    QVERIFY(f.listed);
+    const int folderRow = f.rowOf("folder-a");
+    f.view.selectionModel()->setCurrentIndex(f.view.model()->index(folderRow, 0),
+                                             QItemSelectionModel::NoUpdate);
+
+    // Nothing is named like this: the field says so, and the cursor stays.
+    QTest::keyClicks(&f.view, "zzz");
+    QCOMPARE(f.view.currentIndex().row(), folderRow);
+    QVERIFY(f.view.findChild<QLabel *>()->isVisible());
+    QVERIFY(f.view.findChild<QLabel *>()->text().contains(
+                QStringLiteral("nothing")));
+
+    // Escape puts the cursor back and is over with it.
+    QTest::keyClick(&f.view, Qt::Key_Escape);
+    QVERIFY(!f.view.findChild<QLabel *>()->isVisible());
+    QCOMPARE(f.view.currentIndex().row(), folderRow);
+
+    // A pattern with a wildcard answers the way a filter would: file0? is
+    // file00 and its brothers.
+    QTest::keyClicks(&f.view, "file0?");
+    QCOMPARE(f.view.currentIndex().row(), f.rowOf("file00.txt"));
+    QTest::keyClick(&f.view, Qt::Key_Escape);
+    QCOMPARE(f.view.currentIndex().row(), folderRow);
 }
 
 void TestFileView::arrowsSelectOneRowShiftExtends()

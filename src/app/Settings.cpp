@@ -48,6 +48,16 @@ void Settings::setFolderSizes(bool compute)
     values().setValue("files/folderSizes", compute);
 }
 
+QStringList Settings::commandHistory()
+{
+    return values().value("cmdline/history").toStringList();
+}
+
+void Settings::setCommandHistory(const QStringList &history)
+{
+    values().setValue("cmdline/history", history);
+}
+
 QStringList Settings::tabPaths(int pane)
 {
     return values().value(QString("panes/%1/tabs").arg(pane)).toStringList();

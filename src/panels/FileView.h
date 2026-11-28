@@ -1,12 +1,14 @@
 #pragma once
 
 #include <QBasicTimer>
+#include <QLabel>
 #include <QList>
 #include <QStringList>
 #include <QTableView>
 #include <QUrl>
 
 class FileProxyModel;
+class QLabel;
 class QContextMenuEvent;
 class QDragEnterEvent;
 class QDragLeaveEvent;
@@ -125,9 +127,25 @@ private:
     // Rect of the row of `index` in the coordinates the delegate paints in.
     QRect rowRect(const QModelIndex &index) const;
 
+    // Type-ahead quick search, as in Total Commander: typing a letter opens
+    // a small field over the list, typing goes on narrowing, Enter keeps
+    // where it found, Escape puts the cursor back.
+    void openQuickSearch(const QChar &first);
+    void quickSearchAppend(const QChar &next);
+    void quickSearchBackspace();
+    void quickSearchClose(bool restore);
+    void quickSearchFind(bool fromStart);
+    // Whether a name answers to the pattern: substring, or wildcards when
+    // the pattern has * or ?.
+    static bool quickMatches(const QString &name, const QString &pattern);
+
     FileProxyModel *m_model = nullptr;
     Press m_press = Press::None;
     QPoint m_pressPos;
+    QLabel *m_quickSearch = nullptr;   // the field with the pattern, over the list
+    QString m_quickPattern;
+    int m_quickStart = -1;             // where the cursor was when the search began
+    int m_quickCursor = -1;            // where it stands now, in the search
     QRect m_rubber;
     QPoint m_pointer;
     QBasicTimer m_scrollTimer;  // scrolls while a rubber band touches an edge

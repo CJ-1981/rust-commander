@@ -1,13 +1,16 @@
 #include "MainWindow.h"
 
 #include "AboutDialog.h"
+#include "CommandLine.h"
 #include "Dialogs.h"
 #include "Icons.h"
 #include "Settings.h"
 #include "Theme.h"
 #include "ops/OperationRunner.h"
 #include "ops/Shell.h"
+#include "panels/FileModel.h"
 #include "panels/FileProxyModel.h"
+#include "panels/SelectGroupDialog.h"
 #include "panels/FileView.h"
 #include "panels/PaneWidget.h"
 #include "tools/ChecksumWindow.h"
@@ -15,6 +18,7 @@
 #include "tools/SearchWindow.h"
 #include "tools/DuplicatesWindow.h"
 #include "tools/MultiRenameWindow.h"
+#include "tools/PropertiesWindow.h"
 #include "viewer/ViewerWindow.h"
 
 #include <QActionGroup>
@@ -28,6 +32,11 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
+
+#include <algorithm>
+#include <QItemSelectionModel>
+#include <QProcess>
+#include <QRegularExpression>
 #include <QPlainTextEdit>
 #include <QSplitter>
 #include <QStatusBar>
@@ -88,6 +97,7 @@ MainWindow::MainWindow(QWidget *parent, Dialogs *dialogs)
     layout->addWidget(m_splitter, 1);
     createActions();
     createMenus();
+    createCommandLine();
     createKeyRow();
     layout->addWidget(m_keyRow);
     setCentralWidget(central);
@@ -216,11 +226,35 @@ void MainWindow::createActions()
         CompareWindow::open(files.value(0), files.value(1), *m_dialogs, this);
     });
 
+    a.commandLine = make(nullptr, "terminal", tr("Command line"), {key("Ctrl+K")},
+                         [this] {
+                             m_commandLine->setFocus(Qt::OtherFocusReason);
+                             m_commandLine->setHistory(Settings::commandHistory());
+                         });
     make(&a.back, "arrow-left", tr("Back"), {key("Alt+Left")}, [pane] { pane()->goBack(); });
     make(&a.forward, "arrow-right", tr("Forward"), {key("Alt+Right")}, [pane] { pane()->goForward(); });
     make(&a.up, "arrow-up", tr("Up"), {key("Alt+Up")}, [pane] { pane()->goUp(); });
     make(&a.home, "house", tr("Home"), {key("Alt+Home")}, [pane] { pane()->goHome(); });
     make(&a.typePath, "corner-down-left", tr("Type a path"), {key("Ctrl+G")}, [pane] { pane()->typePath(); });
+    make(&a.selectGroup, "list-checks", tr("Select group"), {key("Ctrl++"), key("Ctrl+=")},
+         [this] { selectGroup(true); });
+    make(&a.unselectGroup, "list-checks", tr("Unselect group"), {key("Ctrl+-")},
+         [this] { selectGroup(false); });
+    make(&a.properties, "info", tr("Properties"),
+         {key("Alt+Enter"),
+#ifdef Q_OS_MACOS
+          key("Ctrl+I")
+#endif
+         },
+         [this, pane] {
+             QStringList paths = pane()->selectedPaths();
+             if (paths.isEmpty() && !pane()->cursorPath().isEmpty()) {
+                 paths = {pane()->cursorPath()};
+             }
+             auto *properties = new PropertiesWindow(paths, this);
+             properties->setAttribute(Qt::WA_DeleteOnClose);
+             properties->show();
+         });
     make(&a.refresh, "refresh-cw", tr("Refresh"), {key("Ctrl+R")}, [pane] { pane()->refresh(); });
     make(&a.filter, "list-filter", tr("Filter"), {key("Ctrl+F")}, [pane] { pane()->showFilter(); });
     make(&a.selectAll, "list-checks", tr("Select all"), {key("Ctrl+A")}, [pane] { pane()->selectAll(); });
@@ -255,7 +289,12 @@ void MainWindow::createActions()
         // The first pane goes to the end, which makes it the right one.
         m_splitter->addWidget(m_splitter->widget(0));
     });
-    make(&a.addFavorite, "star", tr("Add this folder to the favorites"), {key("Ctrl+D")}, [this] {
+    // Ctrl+D is Total Commander's hotlist: the list of folders, from where
+    // the active pane jumps to one. Adding a folder is in the list itself.
+    make(&a.hotlist, "star", tr("Directory hotlist"), {key("Ctrl+D")}, [this] {
+        m_favorites->popup(m_active->mapToGlobal(QPoint(6, 0)));
+    });
+    make(&a.addFavorite, "star", tr("Add this folder to the favorites"), {}, [this] {
         const QString folder = m_active->directory();
         if (folder.isEmpty()) {
             return;
@@ -283,7 +322,8 @@ void MainWindow::createActions()
 
     // What the panes' context menus offer, besides their own.
     const QList<QAction *> menuActions = {a.view,    a.edit,     a.rename,  a.copy,    a.move,
-                                          a.trash,  a.erase,    a.newFolder, a.newFile, a.selectAll};
+                                          a.trash,  a.erase,    a.newFolder, a.newFile, a.selectAll,
+                                          a.properties};
     m_left->setMenuActions(menuActions);
     m_right->setMenuActions(menuActions);
 
@@ -335,6 +375,10 @@ void MainWindow::createMenus()
     file->addAction(a.checksum);
     file->addAction(a.compare);
     file->addSeparator();
+    file->addAction(a.selectGroup);
+    file->addAction(a.unselectGroup);
+    file->addAction(a.properties);
+    file->addSeparator();
     file->addAction(a.closeTab);
     file->addAction(m_quit);
 
@@ -350,6 +394,7 @@ void MainWindow::createMenus()
     connect(m_volumes, &QMenu::aboutToShow, this, &MainWindow::fillVolumes);
     m_favorites = go->addMenu(tr("F&avorites"));
     connect(m_favorites, &QMenu::aboutToShow, this, &MainWindow::fillFavorites);
+    go->addAction(a.hotlist);
 
     QMenu *view = menuBar()->addMenu(tr("&View"));
     view->addAction(a.refresh);
@@ -416,8 +461,112 @@ void MainWindow::createKeyRow()
         layout->addWidget(button);
     }
     layout->addStretch(1);
+    layout->addWidget(m_commandLine, 1);
     m_version = new QLabel(tr("Rust Commander %1").arg(QLatin1String(APP_VERSION)));
     layout->addWidget(m_version);
+}
+
+// What was typed is parsed against the folder shown of the active pane, and
+// carried out: cd, view, edit, a file that is there, or a program to start.
+void MainWindow::createCommandLine()
+{
+    m_commandLine = new CommandLine;
+    connect(m_commandLine, &CommandLine::commandEntered, this, [this](const QString &line) {
+        runCommandLine();
+        Q_UNUSED(line)
+    });
+    connect(m_commandLine, &CommandLine::focusRequested, this,
+            [this] { m_active->setFocusToFiles(); });
+    // The focus of the key row belongs to the file list; the command line is
+    // reached by its key, and its Esc hands the keys back.
+    m_commandLine->setFocusPolicy(Qt::StrongFocus);
+}
+
+// Marks or unmarks every visible row whose name answers to any of the
+// patterns the dialog holds.
+void MainWindow::selectGroup(bool select)
+{
+    qWarning() << "PROBE selectGroup" << select;
+    SelectGroupDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    const QStringList patterns = dialog.patterns();
+    if (patterns.isEmpty()) {
+        return;
+    }
+    const SelectGroupDialog::What what = dialog.what();
+    QAbstractItemModel *list = m_active->files()->model();
+    QItemSelectionModel *marks = m_active->files()->selectionModel();
+    for (int row = 0; row < list->rowCount(); ++row) {
+        const QModelIndex first = list->index(row, 0);
+        const bool isDir = first.data(FileModel::IsDirRole).toBool();
+        if ((what == SelectGroupDialog::What::Files && isDir)
+            || (what == SelectGroupDialog::What::Folders && !isDir)) {
+            continue;
+        }
+        const QString name = first.data().toString();
+        const bool matches = std::any_of(patterns.cbegin(), patterns.cend(),
+                                         [&name](const QString &pattern) {
+                                             return QRegularExpression::fromWildcard(
+                                                        pattern, Qt::CaseInsensitive)
+                                                        .match(name)
+                                                        .hasMatch();
+                                         });
+        if (!matches) {
+            continue;
+        }
+        QItemSelection range;
+        range.select(first.siblingAtColumn(0), first.siblingAtColumn(FileModel::ColumnCount - 1));
+        marks->select(range, select ? QItemSelectionModel::Select : QItemSelectionModel::Deselect);
+    }
+}
+
+void MainWindow::runCommandLine()
+{
+    const QString typed = m_commandLine->text();
+    m_commandLine->clear();
+    CommandLine::Command command;
+    QString error;
+    if (!CommandLine::parse(typed, m_active->directory(), &command, &error)) {
+        if (!error.isEmpty()) {
+            m_dialogs->tell(tr("Command line"), error);
+        }
+        return;
+    }
+    // Remembered for the arrow keys, with the newest first, at most 30.
+    QStringList history = Settings::commandHistory();
+    history.removeAll(typed);
+    history.append(typed);
+    while (history.size() > 30) {
+        history.removeFirst();
+    }
+    Settings::setCommandHistory(history);
+
+    switch (command.kind) {
+    case CommandLine::Kind::Navigate:
+        m_active->navigateTo(command.path);
+        break;
+    case CommandLine::Kind::View:
+        showViewer(command.path, false);
+        break;
+    case CommandLine::Kind::Edit:
+        showViewer(command.path, true);
+        break;
+    case CommandLine::Kind::Open:
+        if (!Shell::open(command.path)) {
+            m_dialogs->tell(tr("Command line"), tr("%1 could not be opened.").arg(command.path));
+        }
+        break;
+    case CommandLine::Kind::Launch:
+        if (!QProcess::startDetached(command.program, command.arguments)) {
+            m_dialogs->tell(tr("Command line"),
+                            tr("%1 could not be started.").arg(command.program));
+        }
+        break;
+    }
+    m_commandLine->setHistory(Settings::commandHistory());
+    m_active->setFocusToFiles();
 }
 
 void MainWindow::setActivePane(PaneWidget *pane)

@@ -3,17 +3,23 @@
 #include <QApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QDialogButtonBox>
 #include <QLineEdit>
 #include <QLabel>
 #include <QWheelEvent>
 #include <QMenu>
+#include <QTimer>
 #include <QPointer>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QSplitter>
 #include <QTest>
 
 #include <memory>
 
+#include "app/CommandLine.h"
+#include "panels/SelectGroupDialog.h"
+#include "tools/PropertiesWindow.h"
 #include "app/MainWindow.h"
 #include "app/Settings.h"
 #include "app/Theme.h"
@@ -27,6 +33,15 @@ namespace {
 
 // A window over two folders: <temp>/a holds one.txt, two.txt and the folder
 // sub; <temp>/b holds note.txt. The settings live under the temp folder.
+// Presses the first key of a portable sequence ("Ctrl+D" and friends), as
+// the platform turned it into. Pressing the raw modifier from QTest can
+// disagree with what the sequence says on macOS.
+void pressSequence(QWidget *window, const char *portable)
+{
+    const QKeySequence seq{QLatin1String(portable)};
+    QTest::keyClick(window, seq[0].key(), seq[0].keyboardModifiers());
+}
+
 struct Fixture {
     QTemporaryDir root;
     QString a;
@@ -117,6 +132,10 @@ private slots:
     // ---- keys belong to the active pane ----
     void aWheelMakesThePaneActiveAndItsKeysWorkThere();
     void spaceReachesTheListFromWhereverTheFocusWanders();
+    void theCommandLineRunsItsCommands();
+    void ctrlDOpensTheHotlistAndEntriesNavigate();
+    void selectGroupMarksWhatThePatternAnswersTo();
+    void propertiesTellsWhatIsThere();
 
 private:
     QTemporaryDir m_settings;
@@ -461,6 +480,130 @@ void TestMainWindow::spaceReachesTheListFromWhereverTheFocusWanders()
     // The window is alive after the forwarding; the focus is still where it
     // was, since the view takes none of it back.
     QVERIFY(QApplication::focusWidget() != f.left()->files());
+}
+
+void TestMainWindow::theCommandLineRunsItsCommands()
+{
+    Fixture f;
+    QVERIFY(f.ready);
+    CommandLine *line = f.window->findChild<CommandLine *>();
+    QVERIFY(line);
+
+    // cd goes where it says, in the pane that is active.
+    line->setText("cd " + f.a + "/sub");
+    QTest::keyClick(line, Qt::Key_Return);
+    QTest::qWait(50);
+    QCOMPARE(f.left()->directory(), f.a + "/sub");
+    // After a command the file list has the keyboard back.
+    QCOMPARE(QApplication::focusWidget(), f.left()->files());
+    // It was remembered for the arrow keys.
+    QVERIFY(Settings::commandHistory().contains(QStringLiteral("cd ") + f.a + "/sub"));
+
+    // A file of the folder shown opens with its application: asked of the
+    // system here is only what cannot be answered offscreen, so what is
+    // asserted is that the line understood it and let it go out.
+    f.right()->navigateTo(f.a);
+    QTest::qWait(50);
+    line->setText("cd " + f.a);
+    QTest::keyClick(line, Qt::Key_Return);
+    QTest::qWait(50);
+    QCOMPARE(f.right()->directory(), f.a);
+
+    // Escape clears the line and gives the keys back to the list.
+    line->setText("half typed");
+    QTest::keyClick(line, Qt::Key_Escape);
+    QCOMPARE(line->text(), QString());
+    QVERIFY(QApplication::focusWidget() != line);
+}
+
+void TestMainWindow::ctrlDOpensTheHotlistAndEntriesNavigate()
+{
+    // Ctrl+D is the hotlist: the folders jump out of it, adding one is in it.
+    Fixture f;
+    QVERIFY(f.ready);
+    Settings::setBookmarks({{QStringLiteral("The B"), f.b}});
+    const int askedBefore = f.dialogs.questions.size();
+
+    pressSequence(f.window.get(), "Ctrl+D");
+    auto *popup = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+    QVERIFY(popup);
+    bool found = false;
+    for (QAction *action : popup->actions()) {
+        if (action->text() == QStringLiteral("The B")) {
+            found = true;
+            action->trigger();
+        }
+    }
+    QVERIFY(found);
+    popup->close();
+    QTRY_COMPARE(f.left()->directory(), f.b);
+    // Nothing was asked: a hotlist entry goes there without questions.
+    QCOMPARE(f.dialogs.questions.size(), askedBefore);
+}
+
+void TestMainWindow::selectGroupMarksWhatThePatternAnswersTo()
+{
+    Fixture f;
+    QVERIFY(f.ready);
+    QCOMPARE(f.left()->directory(), f.a);
+    f.left()->files()->clearSelection();
+
+    // Mark what the name answers to: the two files, not the folder.
+    QTimer::singleShot(0, [&] {
+        auto *dialog = qobject_cast<SelectGroupDialog *>(QApplication::activeModalWidget());
+        QVERIFY(dialog);
+        dialog->patternsField()->setText("*.txt");
+        QTest::mouseClick(dialog->markButton(), Qt::LeftButton);
+    });
+    pressSequence(f.window.get(), "Ctrl++");
+    const QStringList marked = f.left()->selectedPaths();
+    QCOMPARE(marked.size(), 2);
+    QVERIFY(marked.contains(f.a + "/one.txt"));
+    QVERIFY(marked.contains(f.a + "/two.txt"));
+
+    // Unmark takes what answers away again; folders can be named as well.
+    // (The key itself is pressed for Select above, which is wired exactly
+    // the same; QTest delivers Key_Minus with a modifier unwell under the
+    // offscreen platform, so Unselect is triggered by name here.)
+    QAction *unselect = nullptr;
+    for (QAction *action : f.window->findChildren<QAction *>()) {
+        if (action->text() == QStringLiteral("Unselect group")) {
+            unselect = action;
+        }
+    }
+    QVERIFY(unselect);
+    QTimer::singleShot(0, [&] {
+        auto *dialog = qobject_cast<SelectGroupDialog *>(QApplication::activeModalWidget());
+        QVERIFY(dialog);
+        dialog->patternsField()->setText("sub one*");
+        QTest::mouseClick(dialog->unmarkButton(), Qt::LeftButton);
+    });
+    unselect->trigger();
+    // The folder and one.txt were named; two.txt was not, and stays marked.
+    const QStringList left = f.left()->selectedPaths();
+    QCOMPARE(left.size(), 1);
+    QCOMPARE(left.first(), f.a + "/two.txt");
+}
+
+void TestMainWindow::propertiesTellsWhatIsThere()
+{
+    Fixture f;
+    QVERIFY(f.ready);
+
+    // One file: its name, its path, its size.
+    PropertiesWindow one({f.a + "/one.txt"});
+    QCOMPARE(one.windowTitle(), QStringLiteral("Properties"));
+    QCOMPARE(one.titleText(), QStringLiteral("one.txt"));
+    QVERIFY(one.detailsText().contains(f.a + "/one.txt"));
+    QVERIFY(one.sizeText().contains(QStringLiteral("1 byte")));
+
+    // Several: counted, and measured together, the folder on a worker.
+    PropertiesWindow group({f.a + "/one.txt", f.a + "/two.txt", f.a + "/sub"});
+    QCOMPARE(group.titleText(), QStringLiteral("3 items"));
+    QVERIFY(group.detailsText().contains(QStringLiteral("1 folders and 2 files")));
+    QTRY_VERIFY_WITH_TIMEOUT(!group.sizeText().contains(QStringLiteral("Finding out")), 15000);
+    // One and two and the file inside the folder: six bytes in all.
+    QVERIFY(group.sizeText().contains(QStringLiteral("6 bytes")));
 }
 
 void TestMainWindow::reviewDeleteInAFieldEditsTheText()

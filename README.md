@@ -33,10 +33,11 @@ The commander core ("Milestone 1") lives on the `qt` branch. **The Qt version ha
 
 ### Looking at files
 
-- `F3` opens the item under the cursor in the built-in viewer, read-only. `F4` opens it in the editor, where `Ctrl+S` saves and closing with unsaved changes asks first. `Tab` indents in the editor. Files are saved in the encoding they had (a file that isn't UTF-8 is taken byte for byte, so nothing is replaced), with the line endings they had. Text typed in an encoding that can't hold it turns the file into UTF-8, and the window says so. A file that is not text is not shown; a button opens it with its application instead.
+- `F3` opens the item under the cursor in the built-in viewer, read-only. `F4` opens it in the editor, where `Ctrl+S` saves and closing with unsaved changes asks first. `Esc` closes both (the editor asks about changes first, as closing with the mouse does). `Tab` indents in the editor. Files are saved in the encoding they had (a file that isn't UTF-8 is taken byte for byte, so nothing is replaced), with the line endings they had. Text typed in an encoding that can't hold it turns the file into UTF-8, and the window says so. A file that is not text is not shown; a button opens it with its application instead.
 - `Enter` or a double-click enters a folder. A file opens with the application the system uses for it.
-- Columns for name, size, type and date modified; click a header to sort. `Ctrl+H` shows hidden files. `Ctrl+L` computes the sizes of folders in the background.
+- Columns for name, size, type and date modified; click a header to sort. `Ctrl+H` shows hidden files. `Ctrl+L` computes the sizes of folders in the background; the switch is remembered, a size that was measured stays measured, and marking a folder with `Space` measures it on the spot.
 - A live filter (`Ctrl+F`): only the names containing all the typed words are listed.
+- Quick search: typing letters while the list has the keyboard opens a small field over the list, and the cursor jumps to what answers — plain text or `*`/`?` wildcards. `Enter` keeps what it found, `Esc` puts the cursor back where the search began.
 - The path bar shows the folder as buttons to click through. Clicking empty space in it, or typing, turns it into a field: `~` and paths relative to the folder shown are understood, folder names are completed while typing, `Enter` goes there and `Esc` gives up.
 - A folder refreshes by itself when other programs change it.
 
@@ -52,9 +53,10 @@ The File menu gathers the tools. Each works on the folder shown and the selectio
 
 ### Around it
 
-- A light theme, a dark theme, or whichever the system uses (View → Theme); the last one follows the system when it changes.
+- A light theme, a dark theme, or whichever the system uses (View → Theme); the last one follows the system when it changes, and an explicit choice takes the window frame — the title bar — with it.
 - Favorites (Go → Favorites; `Ctrl+D` adds the folder shown) and the volumes of the computer (Go → Volumes).
 - A terminal in the folder shown: `Ctrl+Alt+T` or the *Terminal* button. On Windows it starts Windows Terminal when that is installed, and Command Prompt otherwise.
+- A command line in the bottom row (`Ctrl+K` brings the cursor there): `cd` goes to a folder, `view` and `edit` open the viewer and the editor, a path that is there is opened or entered, and anything else starts as a program with the rest as its arguments. `~` and relative paths are understood, names complete while typing, the arrow keys walk what was run, and `Esc` gives the keyboard back to the files.
 - The function keys as buttons along the bottom of the window, for anyone who would rather click: `F3` View, `F4` Edit, `F5` Copy, `F6` Move, `F7` New folder, `Shift+F6` Rename, `F8` Delete and `Shift+F8` Delete for good.
 - The window size and position, the divider, the theme, the favorites and the tabs are remembered between starts.
 
@@ -71,7 +73,8 @@ The shortcuts act on the active pane. `Ctrl` below is the Command key on macOS. 
 | `Ctrl`+`Up`, `Ctrl`+`Down` | Move the cursor without changing the selection |
 | `PgUp`, `PgDn` | One page up or down |
 | `Home`, `End` | First or last row |
-| `Insert`, `Space` | Mark the row under the cursor and move down one row; on a marked row, unmark it |
+| `Insert`, `Space` | Mark the row under the cursor and move down one row; on a marked row, unmark it. A folder also gets its size measured |
+| letters | Quick search: jump to what answers; `Enter` keeps it, `Esc` puts the cursor back |
 | `Ctrl`+`Space` | Mark or unmark the row under the cursor, and stay on it |
 | `Enter` | Enter the folder, or open the file with its application |
 | `Backspace` | Go to the parent folder |
@@ -80,7 +83,7 @@ The shortcuts act on the active pane. `Ctrl` below is the Command key on macOS. 
 | `F6` | Move the selection to the other pane |
 | `F7` | New folder |
 | `Ctrl`+`N` | New file |
-| `F8`, `Del` | Move the selection to the Trash, after asking |
+| `F8`, `Del`, `Cmd`+`Del` (macOS), `Option`+`Del` (macOS) | Move the selection to the Trash, after asking |
 | `Shift`+`F8`, `Shift`+`Del` | Delete the selection for good, after asking |
 | `Ctrl`+`A` | Select everything |
 | Menu key, right-click | Context menu |
@@ -110,13 +113,16 @@ In the path field, `Enter` goes to the typed path and `Esc` returns to the folde
 | `Ctrl`+`F` | Go to the filter |
 | `Ctrl`+`H` | Show or hide hidden files |
 | `Ctrl`+`L` | Show or hide the sizes of folders |
-| `Ctrl`+`D` | Add the folder shown to the favorites |
+| `Ctrl`+`D` | The directory hotlist: the favorites pop up over the pane; picking one goes there, and adding the folder shown is in the list |
 | `Ctrl`+`Alt`+`T` | Open a terminal in the folder shown |
 | `F3`, `F4` | View, edit: the item under the cursor |
 | `Ctrl`+`S` | Save in the editor |
 | `Ctrl`+`F3` | Search files |
 | `Ctrl`+`M` | Multi-rename the selection |
 | `Ctrl`+`Shift`+`D` | Find duplicate files in the folder shown |
+| `Ctrl`+`+` | Select group: mark every name that answers to the patterns (* and ? wildcards, several separated by spaces), files, folders or both |
+| `Ctrl`+`-` | Unselect group: the same, taking the marks away |
+| `Alt`+`Enter`, `Cmd`+`I` (macOS) | Properties of the selection |
 | `Ctrl`+`Q` | Quit |
 
 ### With the mouse
