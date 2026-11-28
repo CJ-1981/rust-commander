@@ -335,6 +335,7 @@ void TestPaneWidget::hiddenFilesCanBeShown()
     Fixture f;
     QVERIFY(f.ready);
     writeFile(f.path("a/.secret"), "s");
+    setHiddenAttribute(f.path("a/.secret"));
     f.pane.refresh();
     QVERIFY(f.settle());
     QCOMPARE(f.rows(), 3);

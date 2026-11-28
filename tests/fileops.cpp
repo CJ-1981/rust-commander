@@ -163,7 +163,9 @@ void TestFileOps::mergesIntoAFolderOfTheSameName()
     answers.script = {FileOps::Existing::Skip};
     QVERIFY(FileOps::copy({f.source + "/sub"}, f.target, answers, progress, &error));
     QCOMPARE(answers.asked, 1);
-    QCOMPARE(answers.targets, QStringList({f.target + "/sub/b.txt"}));
+    // The question names the file as the system writes paths there.
+    QCOMPARE(answers.targets,
+             QStringList({QDir::toNativeSeparators(f.target + "/sub/b.txt")}));
     QCOMPARE(readFile(f.target + "/sub/b.txt"), QString("different"));
     QCOMPARE(readFile(f.target + "/sub/d.txt"), QString("keep"));
     QCOMPARE(readFile(f.target + "/sub/deep/c.txt"), QString("ccccc"));
