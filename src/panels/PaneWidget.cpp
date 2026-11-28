@@ -6,6 +6,7 @@
 #include "PathBar.h"
 #include "app/Dialogs.h"
 #include "app/Icons.h"
+#include "app/Settings.h"
 #include "ops/FileOps.h"
 #include "ops/OperationRunner.h"
 #include "ops/Shell.h"
@@ -86,6 +87,7 @@ PaneWidget::PaneWidget(Dialogs &dialogs, OperationRunner &runner, QWidget *paren
     , m_mark(new QWidget)
     , m_watcher(new QFileSystemWatcher(this))
     , m_changeTimer(new QTimer(this))
+    , m_folderSizes(Settings::folderSizes())
 {
     m_proxy->setSourceModel(m_model);
     buildUi();
@@ -105,6 +107,8 @@ PaneWidget::PaneWidget(Dialogs &dialogs, OperationRunner &runner, QWidget *paren
         updateStatus();
     });
     connect(m_model, &FileModel::listingFailed, this, &PaneWidget::updateStatus);
+    // Marking a folder computes its size, whether or not the column is shown.
+    connect(m_view, &FileView::sizeRequested, m_model, &FileModel::requestSizeFor);
     connect(m_proxy, &QAbstractItemModel::rowsInserted, this, &PaneWidget::updateStatus);
     connect(m_proxy, &QAbstractItemModel::rowsRemoved, this, &PaneWidget::updateStatus);
 
@@ -330,7 +334,9 @@ void PaneWidget::addButton(QAction *action, QAction *window, Ready ready)
     m_buttons.append({action, window, ready});
     // The tool bar makes the button for an action when it is first asked for.
     QWidget *button = m_toolbar->widgetForAction(action);
-    button->setFocusPolicy(Qt::TabFocus);
+    // The keys belong to the file list; a button that keeps focus would
+    // stand between Space and the row under the cursor.
+    button->setFocusPolicy(Qt::NoFocus);
     button->installEventFilter(this);
 }
 
@@ -911,7 +917,13 @@ void PaneWidget::toggleHidden()
 
 void PaneWidget::toggleFolderSizes()
 {
-    m_folderSizes = !m_folderSizes;
+    setShowsFolderSizes(!m_folderSizes);
+}
+
+void PaneWidget::setShowsFolderSizes(bool show)
+{
+    m_folderSizes = show;
+    Settings::setFolderSizes(show);
     if (m_folderSizes) {
         m_model->requestFolderSizes();
     }

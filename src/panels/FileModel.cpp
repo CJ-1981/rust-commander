@@ -67,6 +67,9 @@ void FileModel::setPath(const QString &path)
 
 void FileModel::reload()
 {
+    // The listing is reread because the folder changed: what the sizes were
+    // may no longer be so. A plain navigation keeps them.
+    m_sizesStale = true;
     if (!m_path.isEmpty()) {
         load(m_path);
     }
@@ -95,7 +98,10 @@ void FileModel::load(const QString &path)
                 m_error = listing.error;
                 beginResetModel();
                 m_entries = listing.entries;
-                m_folderSizes.clear();
+                if (m_sizesStale) {
+                    m_folderSizes.clear();
+                    m_sizesStale = false;
+                }
                 m_sizeRequests.clear();
                 endResetModel();
                 if (m_error.isEmpty()) {
@@ -169,46 +175,50 @@ void FileModel::load(const QString &path)
 
 void FileModel::requestFolderSizes()
 {
-    QStringList pending;
     for (const FileEntry &entry : m_entries) {
-        if (entry.isDir && !m_folderSizes.contains(entry.path)
-            && !m_sizeRequests.contains(entry.path)) {
-            pending.append(entry.path);
+        if (entry.isDir) {
+            requestSizeFor(entry.path);
         }
     }
-    for (const QString &path : pending) {
-        m_sizeRequests.insert(path);
-        auto *watcher = new QFutureWatcher<FolderSize>(this);
-        connect(watcher, &QFutureWatcher<FolderSize>::finished, this,
-                [this, watcher] {
-                    watcher->deleteLater();
-                    const FolderSize result = watcher->result();
-                    m_sizeRequests.remove(result.path);
-                    // A cancelled measurement is incomplete: keep it out of the cache.
-                    if (!m_cancel->load(std::memory_order_relaxed)) {
-                        setFolderSize(result.path, result.bytes, result.items);
-                    }
-                });
-        watcher->setFuture(QtConcurrent::run(&m_sizePool, [path, cancel = m_cancel]() -> FileModel::FolderSize {
-            // Symlinked folders are not followed, so a link loop can't run forever.
-            QDirIterator it(path, QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
-                            QDirIterator::Subdirectories);
-            FileModel::FolderSize total;
-            total.path = path;
-            while (it.hasNext()) {
-                if (cancel->load(std::memory_order_relaxed)) {
-                    return total;
-                }
-                it.next();
-                const QFileInfo info = it.fileInfo();
-                if (!info.isSymLink()) {
-                    total.bytes += info.size();
-                }
-                ++total.items;
-            }
-            return total;
-        }));
+}
+
+void FileModel::requestSizeFor(const QString &path)
+{
+    if (!QFileInfo(path).isDir() || m_folderSizes.contains(path)
+        || m_sizeRequests.contains(path)) {
+        return;
     }
+    m_sizeRequests.insert(path);
+    auto *watcher = new QFutureWatcher<FolderSize>(this);
+    connect(watcher, &QFutureWatcher<FolderSize>::finished, this,
+            [this, watcher] {
+                watcher->deleteLater();
+                const FolderSize result = watcher->result();
+                m_sizeRequests.remove(result.path);
+                // A cancelled measurement is incomplete: keep it out of the cache.
+                if (!m_cancel->load(std::memory_order_relaxed)) {
+                    setFolderSize(result.path, result.bytes, result.items);
+                }
+            });
+    watcher->setFuture(QtConcurrent::run(&m_sizePool, [path, cancel = m_cancel]() -> FileModel::FolderSize {
+        // Symlinked folders are not followed, so a link loop can't run forever.
+        QDirIterator it(path, QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System,
+                        QDirIterator::Subdirectories);
+        FileModel::FolderSize total;
+        total.path = path;
+        while (it.hasNext()) {
+            if (cancel->load(std::memory_order_relaxed)) {
+                return total;
+            }
+            it.next();
+            const QFileInfo info = it.fileInfo();
+            if (!info.isSymLink()) {
+                total.bytes += info.size();
+            }
+            ++total.items;
+        }
+        return total;
+    }));
 }
 
 void FileModel::setFolderSize(const QString &path, qint64 bytes, qint64 items)

@@ -74,6 +74,8 @@ public:
     void previousTab();
     void closeCurrentTab();
     bool showsFolderSizes() const { return m_folderSizes; }
+    // Sets, remembers (Settings) and starts the computing of folder sizes.
+    void setShowsFolderSizes(bool show);
     // Marks the pane as the one the shortcuts act on.
     void setActive(bool active);
     // Moves the keyboard focus to the file table.

@@ -31,6 +31,9 @@ public:
 
     static bool showHidden();
     static void setShowHidden(bool show);
+    // Whether the folders in the listing have their sizes computed.
+    static bool folderSizes();
+    static void setFolderSizes(bool compute);
 
     // The folders open in each pane's tabs, left to right.
     static QStringList tabPaths(int pane);

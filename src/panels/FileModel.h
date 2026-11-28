@@ -76,6 +76,8 @@ public:
     // Folder sizes, as "size · N items", for every folder in the listing that
     // has none yet. Computed on a worker thread.
     void requestFolderSizes();
+    // The same for one folder, as when the cursor marks it.
+    void requestSizeFor(const QString &path);
 
     Qt::ItemFlags flags(const QModelIndex &index) const override;
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
@@ -126,6 +128,7 @@ private:
     bool m_loading = false;
 
     QHash<QString, QPair<qint64, qint64>> m_folderSizes;  // path -> (bytes, items)
+    bool m_sizesStale = false;  // the listing is reread after a change; the sizes are not to be trusted
     QSet<QString> m_sizeRequests;                          // folders being measured
     mutable QFileIconProvider m_icons;
     mutable QHash<QString, QIcon> m_fileIcons;             // by suffix

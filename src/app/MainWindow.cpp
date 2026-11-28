@@ -171,9 +171,18 @@ void MainWindow::createActions()
     a.copy->setToolTip(tr("Copy the selected items to the other pane (F5)"));
     make(&a.move, "folder-input", tr("Move"), {key("F6")}, [pane] { pane()->moveToOtherPane(); });
     a.move->setToolTip(tr("Move the selected items to the other pane (F6)"));
-    make(&a.trash, "trash", tr("Delete"), {key("F8"), key("Del")}, [pane] { pane()->deleteSelected(false); });
+    QList<QKeySequence> trashKeys = {key("F8"), key("Del")};
+    QList<QKeySequence> eraseKeys = {key("Shift+F8"), key("Shift+Del")};
+#ifdef Q_OS_MACOS
+    // What a Mac keyboard has: Cmd+Backspace moves to the Trash as Finder
+    // does, Option+Backspace is free here. The Del of the first two keys is
+    // fn+Backspace there, which is no way to work.
+    trashKeys += {key("Ctrl+Backspace"), key("Alt+Backspace")};
+    eraseKeys += {key("Ctrl+Shift+Backspace")};
+#endif
+    make(&a.trash, "trash", tr("Delete"), trashKeys, [pane] { pane()->deleteSelected(false); });
     a.trash->setToolTip(tr("Move the selected items to the Trash (F8)"));
-    make(&a.erase, "eraser", tr("Delete for good"), {key("Shift+F8"), key("Shift+Del")},
+    make(&a.erase, "eraser", tr("Delete for good"), eraseKeys,
          [pane] { pane()->deleteSelected(true); });
     a.erase->setToolTip(tr("Delete the selected items for good (Shift+F8)"));
     make(&a.terminal, "terminal", tr("Open terminal here"), {key("Ctrl+Alt+T")},
@@ -394,7 +403,9 @@ void MainWindow::createKeyRow()
         // has no key in it.
         auto *button = new QToolButton;
         button->setText(action->shortcuts().first().toString() + QLatin1String("  ") + action->text());
-        button->setFocusPolicy(Qt::TabFocus);
+        // The keys belong to the file list; a button that keeps focus would
+        // stand between Space and the row under the cursor.
+        button->setFocusPolicy(Qt::NoFocus);
         connect(button, &QToolButton::clicked, action, &QAction::trigger);
         const auto follow = [button, action] {
             button->setEnabled(action->isEnabled());
@@ -417,6 +428,13 @@ void MainWindow::setActivePane(PaneWidget *pane)
     m_active = pane;
     m_left->setActive(pane == m_left);
     m_right->setActive(pane == m_right);
+    // The active pane is where the keys go. A field someone is typing in
+    // keeps its place; anything else in this window that held the focus
+    // gives it to the file list, so that Space marks and Enter opens there.
+    QWidget *focus = QApplication::focusWidget();
+    if (!focus || (focus->window() == this && !typesText(focus))) {
+        pane->setFocusToFiles();
+    }
     refreshActions();
 }
 
@@ -553,6 +571,38 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
                 && !QApplication::activePopupWidget()) {
                 switchPane(backwards);
                 return true;
+            }
+            return QMainWindow::eventFilter(watched, event);
+        }
+        // A key that belongs to the file list, pressed while the focus sits
+        // elsewhere in this window — on a button, a label, the pane chrome —
+        // goes to the file list of the active pane, as in Total Commander.
+        // Fields someone types in keep their keys; a view that has the focus
+        // already handles its own.
+        static const QList<Qt::Key> listKeys = {Qt::Key_Space,     Qt::Key_Insert,
+                                                Qt::Key_Return,    Qt::Key_Enter,
+                                                Qt::Key_Backspace, Qt::Key_Menu};
+        QWidget *focus = QApplication::focusWidget();
+        // The last check is for this very forwarding: the event handed to the
+        // view comes through the filter once more, and forwarding it again
+        // would go on for ever.
+        if (focus && focus->window() == this && !typesText(focus)
+            && !qobject_cast<FileView *>(focus) && !qobject_cast<FileView *>(watched)
+            && !QApplication::activePopupWidget()) {
+            const bool bare = press->modifiers() == Qt::NoModifier;
+            const bool printable = bare && !press->text().isEmpty()
+                                   && press->text().at(0).isPrint()
+                                   && press->text().at(0).row() == 0;
+            if ((bare && listKeys.contains(press->key())) || printable) {
+                if (m_active && m_active->files()) {
+                    FileView *view = m_active->files();
+                    QKeyEvent forwarded(press->type(), press->key(), press->modifiers(),
+                                        press->text(), press->isAutoRepeat(), press->count());
+                    const bool taken = QApplication::sendEvent(view, &forwarded);
+                    if (taken && forwarded.isAccepted()) {
+                        return true;
+                    }
+                }
             }
         }
     }

@@ -30,17 +30,30 @@ std::optional<QString> GuiDialogs::askText(const QString &title, const QString &
 
 Dialogs::Answer GuiDialogs::ask(const QString &title, const QString &text)
 {
-    const auto answer = QMessageBox::question(m_parent, title, text,
-                                              QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel,
-                                              QMessageBox::Cancel);
-    switch (answer) {
-    case QMessageBox::Yes:
+    QMessageBox box(m_parent);
+    box.setIcon(QMessageBox::Question);
+    box.setWindowTitle(title);
+    box.setText(text);
+    auto *yes = box.addButton(QMessageBox::Yes);
+    auto *no = box.addButton(QMessageBox::No);
+    auto *cancel = box.addButton(QMessageBox::Cancel);
+    // Yes is what the keys say: Y, Cmd+Y, or plain Return. N says no, and
+    // Esc stays where it always was, on Cancel. The shortcuts are the
+    // dialog's alone, so they stand in no one's way elsewhere.
+    yes->setShortcut(QKeySequence(QStringLiteral("Y, Ctrl+Y")));
+    no->setShortcut(QKeySequence(QStringLiteral("N, Ctrl+N")));
+    box.setDefaultButton(yes);
+    box.exec();
+
+    QAbstractButton *clicked = box.clickedButton();
+    if (clicked == yes) {
         return Answer::Yes;
-    case QMessageBox::No:
-        return Answer::No;
-    default:
-        return Answer::Cancel;
     }
+    if (clicked == no) {
+        return Answer::No;
+    }
+    Q_UNUSED(cancel)
+    return Answer::Cancel;
 }
 
 void GuiDialogs::tell(const QString &title, const QString &text)
@@ -60,6 +73,15 @@ FileOps::Existing GuiDialogs::askOverwrite(const QString &target)
     QAbstractButton *skip = box.addButton(tr("Skip"), QMessageBox::ActionRole);
     QAbstractButton *replaceAll = box.addButton(tr("Replace all"), QMessageBox::ActionRole);
     QAbstractButton *skipAll = box.addButton(tr("Skip all"), QMessageBox::ActionRole);
+    // One letter per answer, Esc for Cancel; the shortcuts live only while
+    // the question is up.
+    replace->setShortcut(QKeySequence(QStringLiteral("R, Ctrl+R")));
+    skip->setShortcut(QKeySequence(QStringLiteral("S, Ctrl+S")));
+    replaceAll->setShortcut(QKeySequence(QStringLiteral("A, Ctrl+A")));
+    skipAll->setShortcut(QKeySequence(QStringLiteral("L, Ctrl+L")));
+    if (auto *pushReplace = qobject_cast<QPushButton *>(replace)) {
+        box.setDefaultButton(pushReplace);
+    }
     box.exec();
 
     QAbstractButton *clicked = box.clickedButton();

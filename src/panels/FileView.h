@@ -64,6 +64,8 @@ signals:
     void upRequested();
     // The user asked for the context menu; the position is in the viewport.
     void contextMenuRequested(const QPoint &position);
+    // The cursor marked a folder: the pane asks the model for its size.
+    void sizeRequested(const QString &path);
     // Files were dropped onto `targetFolder`. `ask` is set when they come from
     // this app and no modifier chose between copying and moving.
     void dropped(const QList<QUrl> &urls, const QString &targetFolder, Qt::DropAction action, bool ask);

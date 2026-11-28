@@ -38,6 +38,16 @@ void Settings::setShowHidden(bool show)
     values().setValue("files/showHidden", show);
 }
 
+bool Settings::folderSizes()
+{
+    return values().value("files/folderSizes", false).toBool();
+}
+
+void Settings::setFolderSizes(bool compute)
+{
+    values().setValue("files/folderSizes", compute);
+}
+
 QStringList Settings::tabPaths(int pane)
 {
     return values().value(QString("panes/%1/tabs").arg(pane)).toStringList();

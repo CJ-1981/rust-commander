@@ -228,6 +228,15 @@ void apply(Mode mode)
     }
     QApplication::setPalette(makePalette(g_colors));
     qApp->setStyleSheet(fillIn(QString::fromUtf8(kStyleSheet), g_colors));
+    // The parts of the window the system draws, above all the title bar, keep
+    // following the system appearance unless the app says which one it wants.
+    // An explicit choice pins them to it; "like the system" hands them back.
+    if (mode == Mode::System) {
+        QGuiApplication::styleHints()->unsetColorScheme();
+    } else {
+        QGuiApplication::styleHints()->setColorScheme(g_dark ? Qt::ColorScheme::Dark
+                                                             : Qt::ColorScheme::Light);
+    }
     // The icons have the theme's colors in their pixmaps, so they are drawn again.
     Icons::reload();
 }

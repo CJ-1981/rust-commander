@@ -4,6 +4,8 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QLineEdit>
+#include <QLabel>
+#include <QWheelEvent>
 #include <QMenu>
 #include <QPointer>
 #include <QPlainTextEdit>
@@ -111,6 +113,10 @@ private slots:
     void reviewClosingWithAnUnsavedEditorAsks();
     void reviewViewOnAFolderOpensNothing();
     void reviewAFolderIsMadeOnlyInTheFolderShown();
+
+    // ---- keys belong to the active pane ----
+    void aWheelMakesThePaneActiveAndItsKeysWorkThere();
+    void spaceReachesTheListFromWhereverTheFocusWanders();
 
 private:
     QTemporaryDir m_settings;
@@ -412,6 +418,51 @@ void TestMainWindow::f3AndF4OpenTheViewer()
 // Reviewer's tests.
 // ---------------------------------------------------------------------------
 
+void TestMainWindow::aWheelMakesThePaneActiveAndItsKeysWorkThere()
+{
+    // Scrolling the other pane with the wheel makes it the active one — and
+    // the keys must follow, or Space marks a row in the pane that looks
+    // inactive. This was the way Space seemed to do nothing.
+    Fixture f;
+    QVERIFY(f.ready);
+    QCOMPARE(f.window->activePane(), f.left());
+    QWidget *leftView = f.left()->files();
+    leftView->setFocus();
+    QCOMPARE(QApplication::focusWidget(), leftView);
+
+    QWheelEvent wheel(QPointF(40, 40), QPointF(40, 40), QPoint(), QPoint(0, 120),
+                      Qt::NoButton, Qt::NoModifier, Qt::ScrollUpdate, false);
+    QVERIFY(QApplication::sendEvent(f.right()->files()->viewport(), &wheel));
+    QCOMPARE(f.window->activePane(), f.right());
+    // The focus came along, so the next key lands in the pane that moved.
+    QCOMPARE(QApplication::focusWidget(), f.right()->files());
+    QTest::keyClick(QApplication::focusWidget(), Qt::Key_Space);
+    QVERIFY(f.right()->files()->selectionModel()->selectedRows().size() > 0);
+}
+
+void TestMainWindow::spaceReachesTheListFromWhereverTheFocusWanders()
+{
+    // Wherever the focus sits in the window — a status label after a click,
+    // anywhere that is not a field someone types in — Space still marks the
+    // row under the cursor of the active pane.
+    Fixture f;
+    QVERIFY(f.ready);
+    f.click(f.left(), "one.txt");
+    QVERIFY(f.left()->files()->hasFocus() || QApplication::focusWidget() == f.left()->files());
+    f.left()->files()->clearSelection();
+
+    QLabel *label = f.left()->findChild<QLabel *>();
+    QVERIFY(label);
+    label->setFocus();
+    QVERIFY(QApplication::focusWidget() != f.left()->files());
+    QTest::keyClick(QApplication::focusWidget(), Qt::Key_Space);
+    QVERIFY(f.left()->files()->selectionModel()->selectedRows().size() > 0);
+
+    // The window is alive after the forwarding; the focus is still where it
+    // was, since the view takes none of it back.
+    QVERIFY(QApplication::focusWidget() != f.left()->files());
+}
+
 void TestMainWindow::reviewDeleteInAFieldEditsTheText()
 {
     Fixture f;
@@ -434,6 +485,17 @@ void TestMainWindow::reviewDeleteInAFieldEditsTheText()
 
     // And "for good" with Shift, and in the field for the path.
     QTest::keyClick(filter, Qt::Key_Delete, Qt::ShiftModifier);
+    QCOMPARE(f.dialogs.questions.size(), questions);
+    QVERIFY(QFileInfo::exists(f.a + "/one.txt"));
+
+    // The Mac delete keys as well: Cmd+Backspace and Option+Backspace are
+    // for deleting there, and in a field they edit the text, nothing else.
+    QTest::keyClick(filter, Qt::Key_Return);
+    QTest::keyClicks(filter, "cd");
+    QTest::keyClick(filter, Qt::Key_Backspace, Qt::ControlModifier);
+    QCOMPARE(f.dialogs.questions.size(), questions);
+    QVERIFY(QFileInfo::exists(f.a + "/one.txt"));
+    QTest::keyClick(filter, Qt::Key_Backspace, Qt::AltModifier);
     QCOMPARE(f.dialogs.questions.size(), questions);
     QVERIFY(QFileInfo::exists(f.a + "/one.txt"));
 }

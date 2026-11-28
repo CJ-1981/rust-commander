@@ -47,7 +47,38 @@ private slots:
     // ---- added by the reviewer ----
     void reviewSavingAFileInAnotherEncoding();
     void reviewSavingKeepsTheBlankLinesAtTheEnd();
+
+    // ---- Esc ----
+    void escapeClosesTheViewer();
+    void escapeOnAnEditorWithChangesAsksFirst();
 };
+
+void TestViewer::escapeClosesTheViewer()
+{
+    Fixture f;
+    QPointer<ViewerWindow> viewer = new ViewerWindow(f.path, ViewerWindow::Mode::View, f.dialogs);
+    viewer->show();
+    QVERIFY(QTest::qWaitForWindowExposed(viewer));
+    QTest::keyClick(viewer, Qt::Key_Escape);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QVERIFY(viewer.isNull());
+    QCOMPARE(f.dialogs.questions.size(), 0);
+}
+
+void TestViewer::escapeOnAnEditorWithChangesAsksFirst()
+{
+    // Cancel: Esc leaves the window up, exactly as closing with the mouse does.
+    Fixture f;
+    QPointer<ViewerWindow> viewer = new ViewerWindow(f.path, ViewerWindow::Mode::Edit, f.dialogs);
+    viewer->show();
+    QVERIFY(QTest::qWaitForWindowExposed(viewer));
+    viewer->editor()->appendPlainText(QStringLiteral("kept"));
+    f.dialogs.answer = Dialogs::Answer::Cancel;
+    QTest::keyClick(viewer, Qt::Key_Escape);
+    QVERIFY(!viewer.isNull());
+    QVERIFY(viewer->isVisible());
+    QCOMPARE(f.dialogs.questions.size(), 1);
+}
 
 void TestViewer::showsAFileReadOnly()
 {

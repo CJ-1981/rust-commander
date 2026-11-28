@@ -44,6 +44,7 @@ private slots:
     void filtersByWords();
     void sortsBySizeAndDate();
     void computesFolderSizes();
+    void sizesStayThroughANavigationAndGoOnChange();
 
     // ---- added by the reviewer ----
     void reviewListingIsNotHeldUpByFolderSizes();
@@ -432,6 +433,47 @@ void TestFileModel::computesFolderSizes()
              QString("3 items"));
     QCOMPARE(proxy.index(rowOfName(proxy, "loose.txt"), FileModel::SizeColumn).data().toString(),
              humanSize(1));
+}
+
+void TestFileModel::sizesStayThroughANavigationAndGoOnChange()
+{
+    // A size that was computed once stays computed: going away and coming
+    // back shows it at once, without measuring again. It is the folder that
+    // changed, as when the watcher says so, that makes the sizes forgotten.
+    QTemporaryDir root;
+    const QString dir = root.path();
+    QVERIFY(makeFolder(dir + "/sub/inner"));
+    QVERIFY(writeFile(dir + "/sub/one.bin", QByteArray(100, '1')));
+
+    FileModel model;
+    model.setPath(dir);
+    QVERIFY(waitListed(model));
+    FileProxyModel proxy;
+    proxy.setSourceModel(&model);
+    const int sub = rowOfName(proxy, "sub");
+    const QModelIndex sizeIndex = proxy.index(sub, FileModel::SizeColumn);
+
+    model.requestFolderSizes();
+    QTRY_COMPARE_WITH_TIMEOUT(sizeIndex.data(FileModel::FolderSizeRole).toLongLong(), 100, 15000);
+
+    // Away and back: the size is there without waiting for a measurement.
+    model.setPath(root.path() + "/sub/inner");
+    QVERIFY(waitListed(model));
+    model.setPath(dir);
+    QVERIFY(waitListed(model));
+    const int subAgain = rowOfName(proxy, "sub");
+    QCOMPARE(proxy.index(subAgain, FileModel::SizeColumn).data(FileModel::FolderSizeRole)
+                 .toLongLong(),
+             100);
+
+    // The folder changed (what reload() is for): the size is not trusted.
+    model.reload();
+    QVERIFY(waitListed(model));
+    const int subFresh = rowOfName(proxy, "sub");
+    QVERIFY(subFresh >= 0);
+    QCOMPARE(proxy.index(subFresh, FileModel::SizeColumn).data(FileModel::FolderSizeRole)
+                 .toLongLong(),
+             -1);
 }
 
 QTEST_MAIN(TestFileModel)

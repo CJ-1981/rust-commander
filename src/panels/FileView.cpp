@@ -505,6 +505,14 @@ void FileView::toggleCurrent()
         row.select(current.siblingAtColumn(0), current.siblingAtColumn(FileModel::ColumnCount - 1));
         selection->select(row, marked ? QItemSelectionModel::Deselect : QItemSelectionModel::Select);
     }
+    // As in Total Commander, marking a folder also tells how big it is.
+    const QModelIndex first = current.siblingAtColumn(0);
+    if (first.data(FileModel::IsDirRole).toBool()) {
+        const QString path = first.data(FileModel::PathRole).toString();
+        if (!path.isEmpty()) {
+            emit sizeRequested(path);
+        }
+    }
     if (const QModelIndex next = current.sibling(current.row() + 1, current.column());
         next.isValid()) {
         selection->setCurrentIndex(next, QItemSelectionModel::NoUpdate);

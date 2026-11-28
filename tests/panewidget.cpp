@@ -141,6 +141,7 @@ class TestPaneWidget : public QObject {
 private slots:
     void initTestCase();
     void showsTheFolder();
+    void spaceMarksAFolderAndTellsHowBigItIs();
     void keepsAHistory();
     void goingUpSelectsTheFolderItCameFrom();
     void aFilePathShowsItsFolderWithTheFileSelected();
@@ -169,6 +170,26 @@ private slots:
 void TestPaneWidget::initTestCase()
 {
     qRegisterMetaType<PaneWidget *>("PaneWidget*");
+}
+
+void TestPaneWidget::spaceMarksAFolderAndTellsHowBigItIs()
+{
+    // Space marks the row, as everywhere; on a folder it also has the size
+    // computed, so that the cell fills without the folder-sizes switch.
+    Fixture f;
+    QVERIFY(f.ready);
+    const QModelIndex b = f.index("b");
+    QVERIFY(b.isValid());
+    f.pane.files()->selectionModel()->setCurrentIndex(
+            b, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    QWidget *view = f.pane.files();
+    view->setFocus();
+    QTest::keyClick(view, Qt::Key_Space);
+    QVERIFY(f.pane.files()->selectionModel()->isSelected(f.index("b")));
+
+    const QModelIndex sizeCell = f.pane.files()->model()->index(b.row(), FileModel::SizeColumn);
+    QTRY_COMPARE_WITH_TIMEOUT(sizeCell.data().toString().isEmpty(), false, 15000);
+    QVERIFY(sizeCell.data(FileModel::FolderSizeRole).toLongLong() >= 0);
 }
 
 void TestPaneWidget::showsTheFolder()

@@ -199,6 +199,18 @@ void ViewerWindow::closeEvent(QCloseEvent *event)
     event->accept();
 }
 
+// This window is no QDialog, so Esc would reach it and do nothing. It closes
+// like every other window of the app; with changes, the editor asks first,
+// as a close with the mouse does.
+void ViewerWindow::keyPressEvent(QKeyEvent *event)
+{
+    if (event->key() == Qt::Key_Escape && event->modifiers() == Qt::NoModifier) {
+        close();
+        return;
+    }
+    QWidget::keyPressEvent(event);
+}
+
 void ViewerWindow::updateTitle()
 {
     setWindowTitle(QStringLiteral("%1%2 \u2014 %3")
